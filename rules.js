@@ -1,0 +1,1125 @@
+/**
+ * MCU Paper Studio - content rules and deterministic validators.
+ *
+ * This module deliberately contains no DOM, storage, network or model calls.
+ * UI code can use it in a browser as an ES module and keep AI generation
+ * separate from checks that are deterministic.
+ */
+
+export const RULES_VERSION = '1.2.1';
+export const MIN_FINAL_BODY_CHARS = 18000;
+
+export const SCHEME_LEVELS = Object.freeze({
+  A: Object.freeze({ minFunctions: 10, maxFunctions: 15, description: '复杂，包含云平台或 WiFi/APP 通信' }),
+  B: Object.freeze({ minFunctions: 7, maxFunctions: 10, description: '中等，包含无线通信' }),
+  C: Object.freeze({ minFunctions: 3, maxFunctions: Infinity, description: '基础，无强制通信要求' }),
+});
+
+export const SCHEME_IRON_RULES = Object.freeze([
+  Object.freeze({ id: 'no-4g', pattern: /(?:SIM7600|\b4G\b)/i, suggestion: 'ESP-01S WiFi', reason: '默认方案优先低成本、免 SIM 卡' }),
+  Object.freeze({ id: 'no-mmwave', pattern: /LD2410|毫米波/i, suggestion: 'HC-SR501', reason: '默认人体检测采用低成本红外方案' }),
+  Object.freeze({ id: 'simple-fall', pattern: /MPU6050/i, suggestion: 'SW-520D', reason: '基础跌倒/倾斜检测优先简单方案' }),
+  Object.freeze({ id: 'avoid-premium-sensors', pattern: /AS608|MAX30102|TCS34725/i, suggestion: '从器件库选择满足需求的简单替代器件', reason: '默认面向本科项目的成本和实现难度' }),
+  Object.freeze({ id: 'simple-driver', pattern: /TB6612|L298N/i, suggestion: '5V 继电器或与负载匹配的简单驱动', reason: '默认执行机构优先简单、可验证的驱动方式' }),
+]);
+
+const INVALID_OLED_SIZE_PATTERN = /(?:^|[^\d.．])96\s*(?:英寸|寸)\s*(?:的\s*)?(?:OLED|显示(?:屏|器)?)/i;
+
+export const SCHEME_SYSTEM_PROMPT = String.raw`
+你是单片机/嵌入式本科项目方案设计助手。你的任务是把项目的背景、目标、总体架构、器件选择、功能与实施注意事项说清楚，形成完整但不越界到论文证据层的项目方案。
+
+【最高优先级】
+1. 题目必须逐字保持，不增删、不改写、不“学术化”。
+2. 用户明确输入 > 用户高级选项 > 等级默认规则 > 常见选型经验。
+3. 用户明确指定的器件和功能不得被替换、删除或歪曲；不同材料冲突时不要擅自选择，输出 conflicts 等待用户确认。
+4. 用户没有提供的引脚、阈值、精度、响应时间、地址、电压和测试结果不得写成项目事实。
+5. A/B/C 等级仅供内部控制复杂度。除 JSON 的 level 字段外，overview、architecture、devices、functions、implementationNotes、conflicts 和 warnings 中禁止出现“A级方案”“符合B级要求”“C级难度”等等级说明，不向最终读者解释内部等级。
+
+【工作模式】
+- create：可依据题目、用户要求和难度等级补全合理方案；补充项标记为 ai_suggestion。不得为凑数量拆分同一功能或增加与题目无关的功能。
+- import 或 extract：只能忠实整理已有方案、任务书或开题材料；不按难度等级补功能，不新增、替换或猜测器件型号。原文未说明的选型理由写“原资料未说明”，缺失和矛盾进入 conflicts/warnings，不得伪装成原文事实。
+
+【等级规则】
+- A：10~15 项功能，通常包含云平台或 WiFi/APP 通信、传感器和执行机构。
+- B：7~10 项功能，通常包含无线通信、传感器和执行机构。
+- C：至少 3 项功能，以基础采集和控制为主，不强制增加通信。
+- 等级只用于补足复杂度，不能覆盖用户明确限制，也不能为了凑数量生成与题目无关的功能。
+- 最终方案正文不得提及等级名称、等级规则、功能数量档位或“符合某级方案”等内部判断。
+
+【默认选型铁律】
+1. 默认不推荐 4G/SIM7600，远程传输优先 ESP-01S WiFi。
+2. 默认不推荐 LD2410，普通人体检测优先 HC-SR501。
+3. 基础倾斜/跌倒检测默认不用 MPU6050，优先 SW-520D。
+4. 默认避免 AS608、MAX30102、TCS34725 等成本或实现难度较高的器件，除非题目明确需要。
+5. 默认避免 TB6612/L298N 等复杂双路驱动，普通开关型负载优先简单且匹配的驱动方案。
+6. 能少一个硬件就少一个，优先低价、主流、资料充分、适合本科调试的方案。
+7. 主控自带 ADC 时不额外添加 ADC0832。
+8. 用户明确指定上述器件时，以用户要求为准，但应在 conflicts/warnings 中提示实现难度，不得悄悄替换。
+9. 0.96 英寸 OLED 必须写为“0.96寸OLED”或“0.96英寸OLED”，禁止丢失小数点写成“96寸OLED”或“96英寸OLED”。
+
+【方案内容边界】
+1. overview 说明项目背景、建设目标和系统级总体工作方式。
+2. architecture 分别说明输入/采集、主控处理、输出/执行和通信层；没有通信时明确写“无”。
+3. devices 对每个核心器件说明准确型号或用户原称、项目中的主要作用和工程选型理由，不堆砌手册参数。
+4. functions 对每项功能说明用户可理解的功能表现及在项目中的作用。
+5. implementationNotes 只概括供电、已知接口/通信、开发调试环境和安装布置注意事项。
+6. 方案阶段不生成 deviceRefs、逐功能器件闭环、程序流程、引脚连接、processDescription、verificationMethod、测试步骤和通过判据；这些在论文事实核对阶段结合原理图、源程序和测试资料处理。
+7. 输出前检查题目、功能数量（仅 create）、器件/功能基本完整性、重复项、OLED尺寸写法和选型铁律（仅 create）。
+
+【输出】
+只输出严格 JSON，不要 Markdown 代码块，不要解释：
+{
+  "topic": "逐字保留的原题目",
+  "level": "A|B|C",
+  "overview": {
+    "background": "项目使用场景和需要解决的问题",
+    "goal": "本项目的主要建设目标",
+    "overallDescription": "从输入、主控处理到输出执行的系统级概述"
+  },
+  "architecture": {
+    "inputLayer": "采集或接收的信息",
+    "controlLayer": "主控承担的总体处理职责",
+    "outputLayer": "显示、报警、驱动或控制输出",
+    "communicationLayer": "通信用途；没有则写无"
+  },
+  "devices": [
+    { "model": "准确型号或用户原称", "role": "项目中的主要作用", "selectionReason": "工程选型理由", "source": "user|source_document|ai_suggestion" }
+  ],
+  "functions": [
+    { "text": "功能名称", "description": "功能表现及在项目中的作用", "source": "user|source_document|ai_suggestion" }
+  ],
+  "implementationNotes": {
+    "power": "总体供电注意事项",
+    "interfaces": "已知接口或通信的概括说明",
+    "development": "开发与调试环境；不确定时明确待确认",
+    "installation": "器件安装和布置注意事项"
+  },
+  "conflicts": [],
+  "warnings": []
+}
+`.trim();
+
+export const PAPER_BASE_SYSTEM_PROMPT = String.raw`
+你是单片机/嵌入式方向本科工程设计论文写作助手。只能在已锁定项目事实、章节写作合同和已确认材料范围内写作。
+
+【事实与冲突】
+1. 题目逐字不变；主控、器件、接口、引脚、阈值、功能和术语必须全文一致。
+2. 不得新增、替换或删除项目事实。发现冲突、关键缺失或低可信推断时停止本节生成，返回待确认问题，不得自行选择。
+3. 器件固有知识可以解释，但项目实际采用的接口、引脚、电压、地址、阈值和测试数据必须来自已确认事实。
+
+【章节职责唯一】
+- 第1章回答为什么做：背景、意义、国内外现状、主要研究内容和论文结构。
+- 第2章回答做什么及为什么这样选：需求、总体架构、功能、主要器件选型和最终方案。
+- 第3章回答硬件怎样实现：连接关系、电气条件、电路工作原理和硬件图位。
+- 第4章回答软件怎样实现：总体架构、业务流程、判断逻辑、异常处理、流程图/时序图/公式。
+- 第5章回答如何调试与验证：环境、步骤、现象、结果分析和功能展示图位。
+- 第6章回答完成了什么、有什么不足、怎样改进。
+- 允许必要的简短前后呼应，禁止换词重复、跨章完整复述和通过器件参数堆砌凑字数。
+
+【标题层级与输出】
+1. 当前章标题由系统统一生成，正文中不要重复输出“第X章……”标题。
+2. 论文二级标题统一写成“## 2.1 标题”，论文三级标题统一写成“### 2.1.1 标题”。
+3. 禁止使用单个“#”以及“####”或更深层级；标题编号必须与本章目录一致。
+4. 标题单独占一行，标题下直接写正文，不把标题井号留在普通段落中。
+5. “论文组织结构”中“第1章为……、第2章为……”等逐章说明必须写成普通正文段落，禁止添加任何标题井号；一级章标题只能由系统统一生成。
+
+【软件正文】
+1. 正文不插入源代码。
+2. 不用源文件名、函数名、变量名、宏、寄存器或库 API 介绍程序。
+3. 先分析实际源程序，再用本科论文语言、流程图、时序图、状态图和必要公式说明业务逻辑。
+4. 没有实际代码依据时不得生成具体程序行为。
+
+【图表与非正文说明】
+- 核心器件规划器件图；独立硬件模块规划电路图；核心程序逻辑规划流程图；时序敏感通信才规划时序图；核心功能测试规划展示图。
+- 正文必须先引用图表，再给正式占位；紧接详细的绘图或拍摄说明。
+- 每张图必须使用明确且唯一的图号。每个图号全文只允许一次“如图X-X所示”的首次引出、一个正式图位和一段非正文制作说明，三者在首次出现处连续安排。
+- 后文再次分析同一张图时可以写“由图X-X可知”“结合图X-X分析”或“该图中”，但不得再次写“如图X-X所示/如图所示”，不得重复插入同一图位或制作说明。
+- 禁止使用没有明确图号的“如图所示”“如下图所示”；续写前必须检查本章已有图号，跳过已经出现的图。
+- 非正文说明统一使用“【非正文·类型｜定稿前删除】”开始，以“【非正文结束】”结束。
+- 图示数量由实际项目决定，不固定套用五张流程图。
+
+【引用】
+1. 只使用用户文献库，不联网检索、不新增文献。
+2. 引用只出现在第一章，主要位于国内外研究现状。
+3. 每篇文献全文只引用一次；每个观点句只放一个 [n]；禁止合并引用。
+4. 按正文实际出现顺序从 [1] 连续编号，文末参考文献同步排序。
+5. 正文作者必须与编号对应文献一致。无摘要文献只能保守描述题目体现的研究方向。
+
+【写作质量】
+- 使用“本文”“本系统”“该模块”，语言正式、清楚、符合本科工程设计水平。
+- 允许少量相关的宏观行业铺垫，但必须尽快收束到题目场景，不编政策、市场或统计数据。
+- 没有可靠依据不写创新点；普通集成只能写主要工作或设计特点。
+- 没有测试数据时不生成无依据的精度、误差、响应时间、成功率和稳定运行时长。
+- 学校未明确要求时不生成本章小结。
+- 当前调用只完成章节合同指定的小节，不越界、不提前写后续章节。
+`.trim();
+
+const DEVICE_PATTERNS = Object.freeze({
+  controller: /主控|控制器|单片机|STM32|STC\d|AT89|ESP32|ESP8266|Arduino|PIC\d|MSP430/i,
+  sensor: /传感|检测|采集|测量|温度|湿度|光照|烟雾|气体|水位|压力|加速度|红外|超声|RFID|摄像|DHT\d*|DS18B20|BH1750|MQ-?\d+|HC-SR04|HC-SR501|MPU6050/i,
+  actuator: /执行|驱动|继电器|电机|风扇|水泵|舵机|蜂鸣器|加热|阀|灯|MOS|三极管|SG90|ULN2003/i,
+  display: /显示|OLED|LCD|TFT|数码管|屏/i,
+  communication: /通信|WiFi|蓝牙|ZigBee|LoRa|NB-IoT|ESP-01|HC-05|NRF24|串口|UART|RS485|CAN/i,
+  power: /电源|供电|适配器|电池|稳压|DC-DC|LDO|AMS1117/i,
+});
+
+const FUNCTION_PATTERNS = Object.freeze({
+  sensing: /采集|检测|监测|测量|识别|读取/i,
+  displayOrCommunication: /显示|界面|通信|上传|发送|接收|远程|无线|WiFi|蓝牙|联网|云/i,
+  controlOrAlarm: /控制|调节|执行|报警|提醒|联动|模式|按键|启停|开关/i,
+});
+
+const RESPONSIBILITIES = Object.freeze({
+  1: Object.freeze({
+    purpose: '说明研究背景、意义、国内外研究现状、本文主要工作和论文结构',
+    allowedTypes: ['topic', 'project_goal', 'application', 'background', 'reference'],
+    forbiddenTopics: ['完整器件参数', '具体引脚连接', '源程序函数', '详细测试结果'],
+  }),
+  2: Object.freeze({
+    purpose: '说明系统需求、总体架构、功能设计、主要器件选型和最终方案',
+    allowedTypes: ['topic', 'project_goal', 'function', 'device', 'selection', 'architecture'],
+    forbiddenTopics: ['具体引脚连接', '驱动程序实现', '实际测试结论'],
+  }),
+  3: Object.freeze({
+    purpose: '说明硬件连接、电气条件和电路工作原理',
+    allowedTypes: ['device', 'connection', 'electrical', 'hardware_report'],
+    forbiddenTopics: ['重复完整选型比较', '程序函数流程', '功能测试结论'],
+  }),
+  4: Object.freeze({
+    purpose: '用业务语言说明软件架构、驱动过程、功能逻辑和异常处理',
+    allowedTypes: ['function', 'program_report', 'parameter', 'formula'],
+    forbiddenTopics: ['源代码', '函数名式介绍', '重复器件选型', '重复硬件接线', '测试通过结论'],
+  }),
+  5: Object.freeze({
+    purpose: '说明调试环境、功能验证方法、结果与分析',
+    allowedTypes: ['function', 'test', 'test_record', 'photo'],
+    forbiddenTopics: ['新增器件', '新增功能', '重复程序设计', '无依据量化性能'],
+  }),
+  6: Object.freeze({
+    purpose: '概括实际工作、完成情况、客观不足和一一对应的改进方向',
+    allowedTypes: ['project_goal', 'function', 'test', 'limitation', 'future_work'],
+    forbiddenTopics: ['新增功能', '重复器件参数', '重复程序流程', '重复测试步骤'],
+  }),
+});
+
+function text(value) {
+  return value == null ? '' : String(value).trim();
+}
+
+function list(value) {
+  return Array.isArray(value) ? value : value == null ? [] : [value];
+}
+
+function normalizeKey(value) {
+  return text(value).toLowerCase().replace(/[\s，,。；;、（）()\[\]【】:_-]+/g, '');
+}
+
+function uniqueBy(values, getKey = normalizeKey) {
+  const seen = new Set();
+  return values.filter(value => {
+    const key = getKey(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function stripRole(value) {
+  return text(value).replace(/[（(][^）)]*[）)]\s*$/, '').trim();
+}
+
+function deviceFrom(value, index = 0) {
+  if (typeof value === 'string') {
+    const match = value.match(/^(.+?)[（(]([^）)]+)[）)]$/);
+    return {
+      id: `device-${index + 1}`,
+      model: text(match ? match[1] : value),
+      name: text(match ? match[1] : value),
+      role: text(match ? match[2] : ''),
+      selectionReason: '',
+      core: undefined,
+    };
+  }
+  const item = value || {};
+  return {
+    ...item,
+    id: text(item.id) || `device-${index + 1}`,
+    model: text(item.model || item.name),
+    name: text(item.name || item.model),
+    role: text(item.role),
+    selectionReason: text(item.selectionReason),
+  };
+}
+
+function functionFrom(value, index = 0) {
+  if (typeof value === 'string') return { id: `function-${index + 1}`, name: text(value), text: text(value), description: '' };
+  const item = value || {};
+  const name = text(item.name || item.text);
+  return {
+    ...item,
+    id: text(item.id) || `function-${index + 1}`,
+    name,
+    text: name,
+    description: text(item.description),
+  };
+}
+
+function classifyDevice(device) {
+  const role = `${device.role || ''}`;
+  for (const [kind, pattern] of Object.entries(DEVICE_PATTERNS)) {
+    if (role && pattern.test(role)) return kind;
+  }
+  const haystack = `${device.model} ${device.name} ${device.role}`;
+  for (const [kind, pattern] of Object.entries(DEVICE_PATTERNS)) {
+    if (pattern.test(haystack)) return kind;
+  }
+  return 'other';
+}
+
+function classifyFunction(func) {
+  const value = `${func.name || ''} ${func.text || ''}`;
+  if (FUNCTION_PATTERNS.sensing.test(value)) return 'sensing';
+  if (FUNCTION_PATTERNS.displayOrCommunication.test(value)) return 'displayOrCommunication';
+  if (FUNCTION_PATTERNS.controlOrAlarm.test(value)) return 'controlOrAlarm';
+  return 'other';
+}
+
+function cleanFunctionTitle(value) {
+  return text(value)
+    .replace(/^使用\s*[^，,。；;]{1,24}(?:实现|完成|进行)?\s*/i, '')
+    .replace(/[。；;]+$/g, '')
+    .replace(/功能$/g, '') || '核心功能';
+}
+
+function section(number, titleValue, children = []) {
+  return {
+    id: `section-${number.replace(/\./g, '-')}`,
+    number,
+    title: titleValue,
+    children,
+  };
+}
+
+function dynamicSections(items, prefix, titleBuilder) {
+  return uniqueBy(items, item => normalizeKey(titleBuilder(item))).map((item, index) =>
+    section(`${prefix}.${index + 1}`, titleBuilder(item)),
+  );
+}
+
+function parseSchoolOutline(raw) {
+  if (Array.isArray(raw) && raw.every(item => item && typeof item === 'object')) {
+    return JSON.parse(JSON.stringify(raw));
+  }
+  const lines = Array.isArray(raw) ? raw : text(raw).split(/\r?\n/);
+  const chapters = [];
+  let currentChapter = null;
+  let currentH2 = null;
+  for (const rawLine of lines) {
+    const line = text(rawLine).replace(/^#{1,6}\s*/, '');
+    if (!line) continue;
+    const chineseNumber = { 一: '1', 二: '2', 三: '3', 四: '4', 五: '5', 六: '6', 七: '7', 八: '8', 九: '9', 十: '10' };
+    const ch = line.match(/^(?:第\s*)?([一二三四五六七八九十]|\d+)\s*章[.、\s]*(.+)$/);
+    const h3 = line.match(/^(\d+\.\d+\.\d+)\s+(.+)$/);
+    const h2 = line.match(/^(\d+\.\d+)\s+(.+)$/);
+    if (ch && !line.includes('.')) {
+      const chapterNumber = chineseNumber[ch[1]] || ch[1];
+      currentChapter = section(chapterNumber, ch[2]);
+      chapters.push(currentChapter);
+      currentH2 = null;
+    } else if (h3 && currentChapter) {
+      const parentNumber = h3[1].split('.').slice(0, 2).join('.');
+      currentH2 = currentChapter.children.find(item => item.number === parentNumber) || currentH2;
+      if (currentH2) currentH2.children.push(section(h3[1], h3[2]));
+    } else if (h2 && currentChapter) {
+      currentH2 = section(h2[1], h2[2]);
+      currentChapter.children.push(currentH2);
+    }
+  }
+  return chapters;
+}
+
+/** Build the approved six-chapter outline with dynamic third-level headings. */
+export function buildDefaultOutline({ devices = [], functions = [], schoolOutline = null } = {}) {
+  if (schoolOutline && list(schoolOutline).length) {
+    const parsed = parseSchoolOutline(schoolOutline);
+    if (parsed.length) return parsed;
+  }
+
+  const devs = uniqueBy(list(devices).map(deviceFrom), item => normalizeKey(item.model));
+  const funcs = uniqueBy(list(functions).map(functionFrom), item => normalizeKey(item.name));
+  const groups = Object.groupBy
+    ? Object.groupBy(devs, classifyDevice)
+    : devs.reduce((acc, item) => {
+        const key = classifyDevice(item);
+        (acc[key] ||= []).push(item);
+        return acc;
+      }, {});
+  const functionGroups = Object.groupBy
+    ? Object.groupBy(funcs, classifyFunction)
+    : funcs.reduce((acc, item) => {
+        const key = classifyFunction(item);
+        (acc[key] ||= []).push(item);
+        return acc;
+      }, {});
+
+  const selectionDevices = devs.filter(item => item.core !== false && classifyDevice(item) !== 'power');
+  const selectionChildren = dynamicSections(selectionDevices, '2.4', item => {
+    const kind = classifyDevice(item);
+    if (kind === 'controller') return '主控制器选型';
+    return `${item.model || item.name}选型`;
+  });
+
+  const hardwareGroups = [];
+  if (groups.sensor?.length) {
+    hardwareGroups.push({ title: '传感器电路设计', items: groups.sensor, itemTitle: item => `${item.model || item.name}电路设计` });
+  }
+  if (groups.actuator?.length) {
+    hardwareGroups.push({ title: '执行器驱动电路设计', items: groups.actuator, itemTitle: item => `${item.model || item.name}驱动电路设计` });
+  }
+  const displayAndComm = [...(groups.display || []), ...(groups.communication || [])];
+  if (displayAndComm.length) {
+    hardwareGroups.push({ title: '显示与通信电路设计', items: displayAndComm, itemTitle: item => `${item.model || item.name}电路设计` });
+  }
+  if (groups.other?.length) {
+    hardwareGroups.push({ title: '其他功能电路设计', items: groups.other, itemTitle: item => `${item.model || item.name}电路设计` });
+  }
+  const hardwareChildren = hardwareGroups.map((group, index) => {
+    const number = `3.${index + 4}`;
+    return section(number, group.title, dynamicSections(group.items, number, group.itemTitle));
+  });
+
+  const softwareGroups = [];
+  if (functionGroups.sensing?.length) {
+    softwareGroups.push({ title: '传感器驱动程序设计', items: functionGroups.sensing, itemTitle: item => `${cleanFunctionTitle(item.name)}程序设计` });
+  }
+  if (functionGroups.displayOrCommunication?.length) {
+    softwareGroups.push({ title: '显示与通信程序设计', items: functionGroups.displayOrCommunication, itemTitle: item => `${cleanFunctionTitle(item.name)}程序设计` });
+  }
+  const controlAndOther = [...(functionGroups.controlOrAlarm || []), ...(functionGroups.other || [])];
+  if (controlAndOther.length) {
+    softwareGroups.push({ title: '控制及报警逻辑设计', items: controlAndOther, itemTitle: item => `${cleanFunctionTitle(item.name)}逻辑设计` });
+  }
+  const softwareChildren = softwareGroups.map((group, index) => {
+    const number = `4.${index + 4}`;
+    return section(number, group.title, dynamicSections(group.items, number, group.itemTitle));
+  });
+
+  const testChildren = dynamicSections(funcs, '5.4', item => `${cleanFunctionTitle(item.name)}功能测试`);
+
+  return [
+    section('1', '绪论', [
+      section('1.1', '研究背景及意义'),
+      section('1.2', '国内外研究现状', [
+        section('1.2.1', '国内研究现状'),
+        section('1.2.2', '国外研究现状'),
+        section('1.2.3', '国内外研究现状分析'),
+      ]),
+      section('1.3', '本文主要研究内容'),
+      section('1.4', '论文组织结构'),
+    ]),
+    section('2', '系统总体方案设计', [
+      section('2.1', '系统需求分析'),
+      section('2.2', '系统总体架构'),
+      section('2.3', '系统功能设计'),
+      section('2.4', '主要器件选型', selectionChildren),
+      section('2.5', '系统总体方案确定'),
+    ]),
+    section('3', '系统硬件设计', [
+      section('3.1', '硬件系统总体设计'),
+      section('3.2', '主控最小系统设计'),
+      section('3.3', '电源电路设计'),
+      ...hardwareChildren,
+    ]),
+    section('4', '系统软件设计', [
+      section('4.1', '软件开发环境'),
+      section('4.2', '软件总体架构'),
+      section('4.3', '系统主程序设计'),
+      ...softwareChildren,
+      section(`4.${softwareChildren.length + 4}`, '软件异常处理'),
+    ]),
+    section('5', '系统调试与功能测试', [
+      section('5.1', '系统开发与调试环境'),
+      section('5.2', '硬件调试'),
+      section('5.3', '软件调试'),
+      section('5.4', '系统功能测试', testChildren),
+      section('5.5', '测试结果分析'),
+    ]),
+    section('6', '总结与展望'),
+  ];
+}
+
+export function flattenOutline(outline = []) {
+  const result = [];
+  const visit = node => {
+    result.push(node);
+    list(node.children).forEach(visit);
+  };
+  list(outline).forEach(visit);
+  return result;
+}
+
+/** Allocate an initial draft target while enforcing a final 18,000-character body. */
+export function buildWordTargets(outline = buildDefaultOutline(), options = {}) {
+  const complexityTargets = { simple: 19000, medium: 20000, complex: 22000 };
+  const complexity = options.complexity || 'medium';
+  const requested = Number(options.requestedTarget || complexityTargets[complexity] || 20000);
+  const totalTarget = Math.max(19000, Number.isFinite(requested) ? requested : 20000);
+  const minimumFinal = Math.max(MIN_FINAL_BODY_CHARS, Number(options.minimumFinal || 0));
+  const defaultWeights = { 1: 0.14, 2: 0.16, 3: 0.24, 4: 0.26, 5: 0.16, 6: 0.04 };
+  const customWeights = options.chapterWeights || {};
+  const chapters = list(outline);
+  const rawWeights = chapters.map(chapter => Number(customWeights[chapter.number] ?? defaultWeights[Number(chapter.number)] ?? 1));
+  const weightSum = rawWeights.reduce((sum, value) => sum + Math.max(0, value), 0) || 1;
+  const perChapter = {};
+  let allocated = 0;
+  chapters.forEach((chapter, index) => {
+    const isLast = index === chapters.length - 1;
+    const target = isLast
+      ? totalTarget - allocated
+      : Math.round(totalTarget * Math.max(0, rawWeights[index]) / weightSum);
+    allocated += target;
+    perChapter[chapter.number] = {
+      chapterId: chapter.id,
+      number: chapter.number,
+      title: chapter.title,
+      target,
+      targetMin: Math.max(500, Math.floor(target * 0.92)),
+      targetMax: Math.ceil(target * 1.12),
+    };
+  });
+  return { minimumFinal, totalTarget, complexity, chapters: perChapter };
+}
+
+export function buildChapterContracts({ outline, facts = [], artifacts = [], targets = null } = {}) {
+  const plan = outline?.length ? outline : buildDefaultOutline();
+  const wordTargets = targets || buildWordTargets(plan);
+  return plan.map(chapter => {
+    const number = Number(chapter.number);
+    const responsibility = RESPONSIBILITIES[number] || {
+      purpose: `完成“${chapter.title}”规定的工程论文内容`,
+      allowedTypes: [],
+      forbiddenTopics: [],
+    };
+    const allowedFactIds = list(facts)
+      .filter(fact => !responsibility.allowedTypes.length || responsibility.allowedTypes.includes(fact.type))
+      .map(fact => fact.id)
+      .filter(Boolean);
+    const chapterArtifacts = list(artifacts).filter(item => String(item.chapterId) === String(chapter.id) || String(item.chapterNumber) === String(chapter.number));
+    const target = wordTargets.chapters[chapter.number] || { targetMin: 800, targetMax: 2000 };
+    return {
+      chapterId: chapter.id,
+      chapterNumber: chapter.number,
+      chapterTitle: chapter.title,
+      purpose: responsibility.purpose,
+      allowedFactIds,
+      allowedEvidenceIds: uniqueBy(list(facts).flatMap(fact => responsibility.allowedTypes.includes(fact.type) ? list(fact.sourceIds) : [])),
+      requiredTopics: list(chapter.children).map(item => `${item.number} ${item.title}`),
+      forbiddenTopics: [...responsibility.forbiddenTopics],
+      alreadyCoveredFactIds: [],
+      requiredArtifactIds: chapterArtifacts.filter(item => item.required !== false).map(item => item.id),
+      targetMin: target.targetMin,
+      targetMax: target.targetMax,
+    };
+  });
+}
+
+function artifactMarker(type) {
+  const labels = {
+    device_photo: '图片查找说明',
+    circuit_diagram: '电路图绘制说明',
+    connection_table: '表格整理说明',
+    flowchart: '流程图绘制稿',
+    timing_diagram: '时序图绘制稿',
+    state_diagram: '状态图绘制稿',
+    test_photo: '图片拍摄说明',
+    formula: '公式参数说明',
+  };
+  return labels[type] || '图表说明';
+}
+
+export function makeArtifactSpec({ id, type, chapterId, sectionId, title, sourceFactIds = [], instruction = '', required = true }) {
+  const figureNumber = text(title).match(/图\s*(\d+)\s*[-－—]\s*(\d+)/);
+  return {
+    id,
+    type,
+    chapterId,
+    sectionId,
+    title,
+    required,
+    bodyReference: figureNumber ? `如图${figureNumber[1]}-${figureNumber[2]}所示。` : `${title}见对应图位。`,
+    placeholder: `【${title}——待插入】`,
+    nonBodyInstruction: `【非正文·${artifactMarker(type)}｜定稿前删除】\n${instruction || '请严格依据已确认项目事实完成。'}\n【非正文结束】`,
+    sourceFactIds: uniqueBy(sourceFactIds),
+    status: 'planned',
+  };
+}
+
+function normalizeAuthors(value) {
+  if (Array.isArray(value)) return value.map(text).filter(Boolean);
+  return text(value).split(/[，,；;、]+/).map(text).filter(Boolean);
+}
+
+function parseReferenceLine(line, index) {
+  const raw = text(line);
+  const withoutNumber = raw.replace(/^\s*\[(\d+)\]\s*/, '');
+  const pipe = withoutNumber.split(/\s*[|｜]\s*/);
+  if (pipe.length >= 2) {
+    return {
+      id: `ref-${index + 1}`,
+      authors: normalizeAuthors(pipe[0]),
+      title: text(pipe[1]),
+      abstract: text(pipe[2]),
+      region: /国外|foreign/i.test(pipe[3] || '') ? 'foreign' : /国内|domestic/i.test(pipe[3] || '') ? 'domestic' : 'unknown',
+      directionTags: [],
+      selected: true,
+      raw,
+      originalNumber: Number(raw.match(/^\s*\[(\d+)\]/)?.[1] || index + 1),
+      usedCount: 0,
+    };
+  }
+  const match = withoutNumber.match(/^(.+?)[.．]\s*(.+?)(?:\[[A-Z/]+\]|[.．]|$)/);
+  return {
+    id: `ref-${index + 1}`,
+    authors: normalizeAuthors(match?.[1] || ''),
+    title: text(match?.[2] || withoutNumber),
+    abstract: '',
+    region: 'unknown',
+    directionTags: [],
+    selected: true,
+    raw,
+    originalNumber: Number(raw.match(/^\s*\[(\d+)\]/)?.[1] || index + 1),
+    usedCount: 0,
+  };
+}
+
+/** Parse records supplied as objects, GB/T lines, or "authors | title | abstract | region" lines. */
+export function parseReferences(input) {
+  if (!input) return [];
+  if (Array.isArray(input) && input.every(item => item && typeof item === 'object')) {
+    return input.map((item, index) => ({
+      ...item,
+      id: text(item.id) || `ref-${index + 1}`,
+      authors: normalizeAuthors(item.authors || item.author),
+      title: text(item.title),
+      abstract: text(item.abstract),
+      region: ['domestic', 'foreign'].includes(item.region) ? item.region : 'unknown',
+      directionTags: list(item.directionTags).map(text).filter(Boolean),
+      selected: item.selected !== false,
+      originalNumber: Number(item.originalNumber || index + 1),
+      usedCount: Number(item.usedCount || 0),
+      raw: text(item.raw),
+    }));
+  }
+  const lines = Array.isArray(input) ? input : text(input).split(/\r?\n/);
+  return lines.map(text).filter(Boolean).map(parseReferenceLine);
+}
+
+function chapterEntries(chapters) {
+  if (Array.isArray(chapters)) return chapters.map((chapter, index) => [String(chapter.number || chapter.chapterNumber || index + 1), text(chapter.text || chapter.draft || chapter.content)]);
+  return Object.entries(chapters || {}).map(([number, value]) => [String(number), text(typeof value === 'string' ? value : value?.text || value?.draft || value?.content)]);
+}
+
+function citationSentences(value) {
+  return text(value).match(/[^。！？!?；;\n]+[。！？!?；;]?/g) || [];
+}
+
+function authorTokens(reference) {
+  return uniqueBy(reference.authors.flatMap(author => {
+    const clean = text(author).replace(/\bet\s+al\.?|等$/gi, '').trim();
+    const tokens = [clean];
+    if (/^[A-Za-z]/.test(clean)) tokens.push(clean.split(/\s+/)[0]);
+    return tokens.filter(token => token.length >= 2);
+  }));
+}
+
+function namedAuthorCandidates(sentence) {
+  const ignored = new Set(['国内', '国外', '相关', '已有', '部分', '学者', '研究', '现有', '本文', '本研究', '相关学者', '国内学者', '国外学者']);
+  const candidates = [];
+  for (const match of sentence.matchAll(/([\u4e00-\u9fff]{2,4})(?:等)?(?:围绕|针对|提出|设计了?|研究了|构建了?|采用了?|开发了?|实现了?)/g)) {
+    if (!ignored.has(match[1])) candidates.push(match[1]);
+  }
+  for (const match of sentence.matchAll(/\b([A-Z][A-Za-z'-]{1,30})(?:\s+et\s+al\.?)?(?:等)?(?:\s+|，|,)(?:studied|proposed|designed|developed|研究|提出|设计|开发)/g)) {
+    candidates.push(match[1]);
+  }
+  return uniqueBy(candidates);
+}
+
+export function validateReferences({ references = [], chapters = {}, bibliography = null, requireAllSelected = true } = {}) {
+  const refs = parseReferences(references).filter(reference => reference.selected !== false);
+  const errors = [];
+  const warnings = [];
+  const occurrences = [];
+  const groupedPattern = /\[\s*\d+\s*(?:[-–—,，、]\s*\d+\s*)+\]/;
+  const adjacentPattern = /\[\d+\]\s*\[\d+\]/;
+
+  for (const [chapterNumber, content] of chapterEntries(chapters)) {
+    if (groupedPattern.test(content) || adjacentPattern.test(content)) {
+      errors.push({ code: 'citation_grouped', chapter: chapterNumber, message: '一个引用位置只能出现一个编号，禁止合并引用' });
+    }
+    for (const match of content.matchAll(/\[(\d+)\]/g)) {
+      occurrences.push({ chapter: chapterNumber, number: Number(match[1]), index: match.index });
+      if (chapterNumber !== '1') errors.push({ code: 'citation_outside_ch1', chapter: chapterNumber, message: `引用[${match[1]}]出现在第一章以外` });
+    }
+    for (const sentence of citationSentences(content)) {
+      const marks = [...sentence.matchAll(/\[(\d+)\]/g)].map(match => Number(match[1]));
+      if (marks.length > 1) errors.push({ code: 'multiple_citations_in_sentence', chapter: chapterNumber, message: `单句出现多个引用：${sentence}` });
+      if (marks.length === 1) {
+        const current = refs[marks[0] - 1];
+        if (!current) continue;
+        const currentTokens = authorTokens(current);
+        const namedReferences = refs
+          .map((reference, index) => ({ index: index + 1, tokens: authorTokens(reference) }))
+          .filter(item => item.tokens.some(token => sentence.includes(token)));
+        if (namedReferences.some(item => item.index !== marks[0])) {
+          errors.push({ code: 'citation_author_mismatch', chapter: chapterNumber, message: `句中作者与引用[${marks[0]}]不对应：${sentence}` });
+        }
+        const unrecognized = namedAuthorCandidates(sentence).filter(candidate =>
+          !currentTokens.some(token => candidate.includes(token) || token.includes(candidate)),
+        );
+        if (unrecognized.length) {
+          errors.push({ code: 'citation_author_unknown', chapter: chapterNumber, message: `句中作者“${unrecognized.join('、')}”与引用[${marks[0]}]的作者不对应` });
+        }
+      }
+    }
+  }
+
+  const sequence = occurrences.map(item => item.number);
+  sequence.forEach((number, index) => {
+    if (number !== index + 1) errors.push({ code: 'citation_sequence', message: `第${index + 1}个引用应为[${index + 1}]，实际为[${number}]` });
+  });
+  const counts = new Map();
+  sequence.forEach(number => counts.set(number, (counts.get(number) || 0) + 1));
+  for (const [number, count] of counts) {
+    if (count !== 1) errors.push({ code: 'citation_repeated', message: `参考文献[${number}]被引用${count}次，每篇只能引用一次` });
+    if (number < 1 || number > refs.length) errors.push({ code: 'citation_unknown', message: `引用[${number}]不在用户文献库中` });
+  }
+  if (requireAllSelected) {
+    refs.forEach((reference, index) => {
+      if (!counts.has(index + 1)) errors.push({ code: 'reference_unused', referenceId: reference.id, message: `已选文献“${reference.title}”未在正文引用` });
+    });
+  }
+  refs.forEach(reference => {
+    if (!reference.authors.length || !reference.title) errors.push({ code: 'reference_incomplete', referenceId: reference.id, message: '参考文献缺少作者或题目' });
+    if (reference.region === 'unknown') warnings.push({ code: 'reference_region_unknown', referenceId: reference.id, message: `请确认“${reference.title}”属于国内还是国外文献` });
+  });
+
+  if (bibliography) {
+    const bibliographyRecords = parseReferences(bibliography);
+    if (bibliographyRecords.length !== sequence.length) errors.push({ code: 'bibliography_count', message: '文末参考文献数量与正文引用数量不一致' });
+    bibliographyRecords.forEach((item, index) => {
+      const expected = refs[index];
+      if (expected && normalizeKey(item.title) !== normalizeKey(expected.title)) {
+        errors.push({ code: 'bibliography_order', message: `文末第${index + 1}条与正文[${index + 1}]不对应` });
+      }
+    });
+  }
+
+  const orderedReferences = sequence.map(number => refs[number - 1]).filter(Boolean).map((reference, index) => ({ ...reference, citationNumber: index + 1, usedCount: 1 }));
+  return { valid: errors.length === 0, errors, warnings, occurrences, orderedReferences };
+}
+
+function cleanModelOutput(value) {
+  return text(value)
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/^```(?:json|markdown|md)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+}
+
+function parseSchemeMarkdown(raw) {
+  const title = raw.match(/^#\s+(.+)$/m)?.[1] || raw.match(/(?:题目|课题)[：:]\s*(.+)/)?.[1] || '';
+  const deviceLine = raw.match(/(?:\*\*)?器件(?:清单)?(?:\*\*)?[：:]\s*([^\n]+)/i)?.[1] || '';
+  const devices = deviceLine.split(/[、，,；;]+/).map(text).filter(Boolean).map((value, index) => deviceFrom(value, index));
+  const functionBlock = raw.match(/(?:\*\*)?功能(?:要求|清单)?(?:\*\*)?[：:]\s*\n([\s\S]*)/i)?.[1] || '';
+  const funcs = functionBlock.split(/\r?\n/)
+    .map(line => line.replace(/^\s*[-*+]\s*(?:\[[ xX]\]\s*)?/, '').replace(/^\s*\d+[.、]\s*/, '').trim())
+    .filter(Boolean)
+    .map((value, index) => functionFrom(value, index));
+  return {
+    topic: text(title),
+    level: '',
+    overview: {},
+    architecture: {},
+    devices,
+    functions: funcs,
+    implementationNotes: {},
+    conflicts: [],
+    warnings: [],
+    legacy: true,
+    raw,
+  };
+}
+
+export function parseSchemeResult(input) {
+  if (input && typeof input === 'object') {
+    const object = input;
+    const rawFunctions = list(object.functions || object.funcs);
+    return {
+      topic: text(object.topic || object.title),
+      level: text(object.level).toUpperCase(),
+      overview: object.overview && typeof object.overview === 'object' && !Array.isArray(object.overview) ? { ...object.overview } : {},
+      architecture: object.architecture && typeof object.architecture === 'object' && !Array.isArray(object.architecture) ? { ...object.architecture } : {},
+      devices: list(object.devices).map(deviceFrom),
+      functions: rawFunctions.map(functionFrom),
+      implementationNotes: object.implementationNotes && typeof object.implementationNotes === 'object' && !Array.isArray(object.implementationNotes) ? { ...object.implementationNotes } : {},
+      conflicts: list(object.conflicts),
+      warnings: list(object.warnings),
+      legacy: Boolean(object.legacy || object.legacyMapping) ||
+        !object.overview || !object.architecture || !object.implementationNotes ||
+        (rawFunctions.length > 0 && rawFunctions.every(item => typeof item === 'string')),
+      raw: object,
+    };
+  }
+  const raw = cleanModelOutput(input);
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return parseSchemeResult(JSON.parse(jsonMatch[0]));
+    } catch (_) {
+      // Fall through to the backward-compatible Markdown parser.
+    }
+  }
+  return parseSchemeMarkdown(raw);
+}
+
+function explicitText(options) {
+  return [options.userText, ...list(options.allowedDevices), ...list(options.explicitDevices), ...list(options.allowedFunctions)]
+    .map(value => typeof value === 'object' ? JSON.stringify(value) : text(value))
+    .join(' ');
+}
+
+function hasAny(value, pattern) {
+  return pattern.test(text(value));
+}
+
+export function validateSchemeResult(input, options = {}) {
+  const data = parseSchemeResult(input);
+  const errors = [];
+  const warnings = [];
+  const expectedTopic = text(options.expectedTopic);
+  const mode = ['import', 'extract'].includes(text(options.mode).toLowerCase()) ? 'import' : 'create';
+  const expectedLevel = text(options.level).toUpperCase();
+  const outputLevel = text(data.level).toUpperCase();
+  const level = expectedLevel || outputLevel || 'B';
+  const limits = SCHEME_LEVELS[level] || SCHEME_LEVELS.B;
+  const models = data.devices.map(item => item.model).filter(Boolean);
+  const functionTexts = data.functions.map(item => item.name || item.text).filter(Boolean);
+  const userEvidence = explicitText(options);
+
+  if (!data.topic) errors.push({ code: 'scheme_topic_missing', message: '方案缺少题目' });
+  if (expectedTopic && data.topic !== expectedTopic) errors.push({ code: 'scheme_topic_changed', message: `题目必须逐字保持为“${expectedTopic}”` });
+  if (!SCHEME_LEVELS[level] || (outputLevel && !SCHEME_LEVELS[outputLevel])) errors.push({ code: 'scheme_level_invalid', message: '方案难度等级必须为A、B或C' });
+  else if (expectedLevel && outputLevel && outputLevel !== expectedLevel) errors.push({ code: 'scheme_level_changed', message: `方案难度等级必须保持为${expectedLevel}级` });
+  if (!models.length) errors.push({ code: 'scheme_devices_missing', message: '方案缺少器件清单' });
+  if (!functionTexts.length) errors.push({ code: 'scheme_functions_missing', message: '方案缺少功能清单' });
+  if (mode === 'create' && (functionTexts.length < limits.minFunctions || functionTexts.length > limits.maxFunctions)) {
+    const range = Number.isFinite(limits.maxFunctions) ? `${limits.minFunctions}~${limits.maxFunctions}` : `至少${limits.minFunctions}`;
+    errors.push({ code: 'scheme_function_count', message: `${level}级方案应有${range}项功能，当前为${functionTexts.length}项` });
+  }
+  if (uniqueBy(models).length !== models.length) errors.push({ code: 'scheme_device_duplicate', message: '器件清单存在重复型号或同义重复' });
+  if (uniqueBy(functionTexts).length !== functionTexts.length) errors.push({ code: 'scheme_function_duplicate', message: '功能清单存在重复或同义重复' });
+
+  const overviewComplete = ['background', 'goal', 'overallDescription'].every(key => text(data.overview?.[key]));
+  const architectureComplete = ['inputLayer', 'controlLayer', 'outputLayer', 'communicationLayer'].every(key => text(data.architecture?.[key]));
+  const implementationComplete = ['power', 'interfaces', 'development', 'installation'].every(key => text(data.implementationNotes?.[key]));
+  const devicesComplete = data.devices.every(item => text(item.model) && text(item.role) && text(item.selectionReason));
+  const functionsComplete = data.functions.every(item => text(item.name || item.text) && text(item.description));
+  if (data.legacy) {
+    warnings.push({ code: 'scheme_legacy_structure', message: '旧版方案可继续读取，但建议补充项目概述、系统架构、选型理由和功能说明' });
+  } else {
+    if (!overviewComplete) errors.push({ code: 'scheme_overview_incomplete', message: '项目概述需包含背景、目标和总体工作方式' });
+    if (!architectureComplete) errors.push({ code: 'scheme_architecture_incomplete', message: '系统架构需说明输入、控制、输出和通信层' });
+    if (!implementationComplete) errors.push({ code: 'scheme_implementation_notes_incomplete', message: '实施注意事项需覆盖供电、接口、开发环境和安装布置' });
+    if (!devicesComplete) errors.push({ code: 'scheme_device_details_incomplete', message: '每个器件都需说明型号或原称、项目作用和选型理由' });
+    if (!functionsComplete) errors.push({ code: 'scheme_function_details_incomplete', message: '每项功能都需说明功能表现及在项目中的作用' });
+  }
+
+  const outputText = `${models.join(' ')} ${functionTexts.join(' ')}`;
+  const detailedOutputText = [
+    ...data.devices.map(item => `${item.model || ''} ${item.name || ''} ${item.role || ''} ${item.selectionReason || ''}`),
+    ...data.functions.map(item => `${item.name || item.text || ''} ${item.description || ''}`),
+    JSON.stringify(data.overview || {}),
+    JSON.stringify(data.architecture || {}),
+    JSON.stringify(data.implementationNotes || {}),
+  ].join(' ');
+  INVALID_OLED_SIZE_PATTERN.lastIndex = 0;
+  if (INVALID_OLED_SIZE_PATTERN.test(detailedOutputText)) {
+    errors.push({
+      code: 'scheme_oled_size_decimal_missing',
+      message: 'OLED尺寸误写为“96寸”或“96英寸”；若使用0.96英寸OLED，请改为“0.96寸OLED”',
+    });
+  }
+  if (mode === 'create') {
+    for (const rule of SCHEME_IRON_RULES) {
+      rule.pattern.lastIndex = 0;
+      if (rule.pattern.test(outputText) && !rule.pattern.test(userEvidence)) {
+        errors.push({ code: `scheme_${rule.id}`, message: `${rule.reason}；建议使用${rule.suggestion}` });
+      }
+    }
+  }
+
+  if (mode === 'create') {
+    const hasSensor = data.devices.some(item => classifyDevice(item) === 'sensor');
+    const hasActuator = data.devices.some(item => classifyDevice(item) === 'actuator');
+    const hasWireless = /WiFi|无线|蓝牙|ZigBee|LoRa|NRF24|ESP-01|HC-05|云平台|APP/i.test(outputText);
+    if ((level === 'A' || level === 'B') && (!hasSensor || !hasActuator)) errors.push({ code: 'scheme_level_components', message: `${level}级方案应具备与题目相符的采集和输出/执行能力` });
+    if (level === 'A' && !/WiFi|云平台|APP|小程序|OneNET/i.test(outputText)) errors.push({ code: 'scheme_level_a_network', message: 'A级方案缺少云平台或WiFi/APP通信能力' });
+    if (level === 'B' && !hasWireless) errors.push({ code: 'scheme_level_b_wireless', message: 'B级方案缺少无线通信能力' });
+    if (level === 'C' && hasWireless && !/WiFi|无线|蓝牙|ZigBee|LoRa|NRF24|ESP-01|HC-05/i.test(userEvidence)) warnings.push({ code: 'scheme_level_c_extra_wireless', message: 'C级方案自动加入了通信功能，请确认是否确有需要' });
+  } else {
+    const allowedModels = list(options.allowedDevices).map(item => normalizeKey(typeof item === 'object' ? item.model || item.name : item));
+    for (const model of models) {
+      if (allowedModels.length && !allowedModels.some(value => value.includes(normalizeKey(model)) || normalizeKey(model).includes(value))) {
+        errors.push({ code: 'scheme_added_device', message: `抽取模式新增了未确认器件：${model}` });
+      }
+    }
+    const allowedFunctionTexts = list(options.allowedFunctions).map(item => normalizeKey(typeof item === 'object' ? item.text || item.name : item));
+    for (const functionText of functionTexts) {
+      if (allowedFunctionTexts.length && !allowedFunctionTexts.some(value => value.includes(normalizeKey(functionText)) || normalizeKey(functionText).includes(value))) {
+        errors.push({ code: 'scheme_added_function', message: `整理模式新增了原资料未确认的功能：${functionText}` });
+      }
+    }
+  }
+  if (data.conflicts.length) errors.push({ code: 'scheme_unresolved_conflicts', message: `方案仍有${data.conflicts.length}项冲突需要用户确认` });
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings: [...warnings, ...data.warnings],
+    data: { ...data, level },
+    stats: { devices: models.length, functions: functionTexts.length },
+  };
+}
+
+function issue(severity, code, message, extra = {}) {
+  return { severity, code, message, ...extra };
+}
+
+export function runFactChecks(project = {}, options = {}) {
+  const phase = options.phase || 'paper';
+  const errors = [];
+  const warnings = [];
+  const sources = new Set(list(project.sources).map(source => source.id));
+  const facts = list(project.facts);
+  const devices = list(project.devices).map(deviceFrom);
+  const functions = list(project.functions).map(functionFrom);
+  const conflicts = list(project.conflicts);
+
+  const openBlocking = conflicts.filter(item => item.status !== 'resolved' && item.severity === 'blocking');
+  if (openBlocking.length) errors.push(issue('error', 'fact_blocking_conflicts', `仍有${openBlocking.length}项阻断冲突未确认`, { conflictIds: openBlocking.map(item => item.id) }));
+  const openConfirm = conflicts.filter(item => item.status !== 'resolved' && item.severity === 'confirm');
+  if (openConfirm.length) warnings.push(issue('warning', 'fact_pending_conflicts', `仍有${openConfirm.length}项信息需要确认`, { conflictIds: openConfirm.map(item => item.id) }));
+
+  if (!text(project.topic || project.title)) errors.push(issue('error', 'fact_topic_missing', '论文题目缺失'));
+  if (phase === 'paper' && !['locked', 'confirmed'].includes(project.status)) errors.push(issue('error', 'fact_project_unlocked', '项目事实尚未确认并锁定'));
+
+  for (const fact of facts) {
+    const missingSources = list(fact.sourceIds).filter(id => !sources.has(id));
+    if (missingSources.length) errors.push(issue('error', 'fact_source_missing', `事实“${fact.key || fact.id}”引用了不存在的来源`, { factId: fact.id, sourceIds: missingSources }));
+    if (['conflicted', 'missing'].includes(fact.status) && fact.critical !== false) errors.push(issue('error', 'fact_critical_unresolved', `关键事实“${fact.key || fact.id}”尚未解决`, { factId: fact.id }));
+    if (phase === 'paper' && ['suggested', 'pending_confirm', 'stale'].includes(fact.status)) errors.push(issue('error', 'fact_not_confirmed', `事实“${fact.key || fact.id}”未确认或已失效`, { factId: fact.id }));
+  }
+
+  const modelKeys = devices.map(item => normalizeKey(item.model));
+  if (new Set(modelKeys).size !== modelKeys.length) errors.push(issue('error', 'fact_duplicate_devices', '器件清单存在重复型号'));
+  const controllers = devices.filter(item => classifyDevice(item) === 'controller');
+  if (!controllers.length) errors.push(issue('error', 'fact_controller_missing', '主控制器型号未明确'));
+  if (controllers.length > 1) warnings.push(issue('warning', 'fact_multiple_controllers', '检测到多个主控制器，请确认主从关系'));
+
+  const deviceIds = new Set(devices.map(item => item.id));
+  for (const func of functions) {
+    const invalidDevices = list(func.deviceIds).filter(id => !deviceIds.has(id));
+    if (invalidDevices.length) errors.push(issue('error', 'fact_function_unknown_device', `功能“${func.name}”引用了不存在的器件`, { functionId: func.id, deviceIds: invalidDevices }));
+    if (phase === 'paper') {
+      if (!list(func.deviceIds).length) errors.push(issue('error', 'fact_function_no_hardware', `功能“${func.name}”没有硬件支撑`, { functionId: func.id }));
+      if (!list(func.softwareEvidenceIds).length) errors.push(issue('error', 'fact_function_no_software', `功能“${func.name}”没有程序逻辑依据`, { functionId: func.id }));
+      if (!func.testId) errors.push(issue('error', 'fact_function_no_test', `功能“${func.name}”没有对应测试项目`, { functionId: func.id }));
+    }
+  }
+
+  const connections = list(project.connections);
+  const connectionKeys = new Map();
+  for (const connection of connections) {
+    const key = `${connection.deviceId}:${normalizeKey(connection.devicePin)}`;
+    const value = normalizeKey(`${connection.controllerPin}:${connection.signal}`);
+    if (connectionKeys.has(key) && connectionKeys.get(key) !== value) errors.push(issue('error', 'fact_connection_conflict', `同一器件引脚存在不同连接：${connection.devicePin}`, { connectionId: connection.id }));
+    connectionKeys.set(key, value);
+    if (phase === 'paper' && !['confirmed', 'locked'].includes(connection.status)) errors.push(issue('error', 'fact_connection_unconfirmed', `连接“${connection.devicePin || connection.id}”尚未确认`, { connectionId: connection.id }));
+  }
+
+  if (phase === 'paper') {
+    if (!project.hardwareReport || !['confirmed', 'locked'].includes(project.hardwareReport.status)) errors.push(issue('error', 'fact_hardware_report', '硬件连接与电气关系报告尚未确认'));
+    if (!project.programReport || !['confirmed', 'locked'].includes(project.programReport.status)) errors.push(issue('error', 'fact_program_report', '程序逻辑报告尚未确认'));
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    metrics: {
+      facts: facts.length,
+      devices: devices.length,
+      functions: functions.length,
+      openBlockingConflicts: openBlocking.length,
+    },
+  };
+}
+
+export function stripNonBody(value) {
+  return text(value)
+    .replace(/【非正文·[\s\S]*?【非正文结束】/g, '')
+    .replace(/【(?:图|表)[^】]*——待插入】/g, '')
+    .replace(/^#{1,6}\s+.*$/gm, '')
+    .replace(/^\s*\|.*\|\s*$/gm, '')
+    .replace(/\[(?:\d+)\]/g, '')
+    .trim();
+}
+
+export function countEffectiveBodyChars(chapters) {
+  return chapterEntries(chapters).reduce((sum, [, content]) => {
+    const body = stripNonBody(content);
+    const han = (body.match(/[\u3400-\u9fff]/g) || []).length;
+    const latinWords = (body.match(/\b[A-Za-z][A-Za-z0-9-]*\b/g) || []).length;
+    return sum + han + latinWords;
+  }, 0);
+}
+
+function duplicateParagraphs(chapters) {
+  const seen = new Map();
+  const duplicates = [];
+  for (const [chapter, content] of chapterEntries(chapters)) {
+    const paragraphs = stripNonBody(content).split(/\n\s*\n/).map(text).filter(value => value.length >= 40);
+    paragraphs.forEach(paragraph => {
+      const key = normalizeKey(paragraph);
+      if (seen.has(key)) duplicates.push({ paragraph, firstChapter: seen.get(key), chapter });
+      else seen.set(key, chapter);
+    });
+  }
+  return duplicates;
+}
+
+function validateArtifacts(artifacts, chapters) {
+  const errors = [];
+  const warnings = [];
+  const ids = new Set();
+  const content = chapterEntries(chapters).map(([, value]) => value).join('\n');
+  for (const artifact of list(artifacts)) {
+    if (!artifact.id || ids.has(artifact.id)) errors.push(issue('error', 'artifact_duplicate_id', `图表ID缺失或重复：${artifact.id || '（空）'}`));
+    ids.add(artifact.id);
+    if (artifact.required !== false && !text(artifact.placeholder)) errors.push(issue('error', 'artifact_placeholder_missing', `图表“${artifact.title}”缺少占位符`, { artifactId: artifact.id }));
+    const placeholderCount = artifact.placeholder ? content.split(artifact.placeholder).length - 1 : 0;
+    const referenceCount = artifact.bodyReference ? content.split(artifact.bodyReference).length - 1 : 0;
+    if (artifact.required !== false && artifact.placeholder && !placeholderCount) errors.push(issue('error', 'artifact_not_in_body', `正文缺少图表占位“${artifact.title}”`, { artifactId: artifact.id }));
+    if (artifact.required !== false && placeholderCount > 1) errors.push(issue('error', 'artifact_placeholder_duplicate', `图表“${artifact.title}”的正式图位出现了 ${placeholderCount} 次，同一张图只能保留一个图位`, { artifactId: artifact.id }));
+    if (artifact.required !== false && artifact.bodyReference && !referenceCount) errors.push(issue('error', 'artifact_reference_missing', `正文未先引用图表“${artifact.title}”`, { artifactId: artifact.id }));
+    if (artifact.required !== false && referenceCount > 1) errors.push(issue('error', 'artifact_reference_duplicate', `图表“${artifact.title}”的首次引出出现了 ${referenceCount} 次，同一张图只能写一次“如图所示”`, { artifactId: artifact.id }));
+    if (artifact.required !== false && placeholderCount && referenceCount && content.indexOf(artifact.bodyReference) > content.indexOf(artifact.placeholder)) errors.push(issue('error', 'artifact_reference_after_placeholder', `图表“${artifact.title}”应先在正文中引用，再放置正式图位`, { artifactId: artifact.id }));
+    if (artifact.required !== false && artifact.nonBodyInstruction && !content.includes(artifact.nonBodyInstruction)) warnings.push(issue('warning', 'artifact_instruction_missing', `图表“${artifact.title}”缺少详细非正文说明`, { artifactId: artifact.id }));
+  }
+  return { errors, warnings };
+}
+
+function codeLikeIssues(chapters) {
+  const errors = [];
+  for (const [chapter, raw] of chapterEntries(chapters)) {
+    const content = stripNonBody(raw);
+    if (/```(?:c|cpp|c\+\+|arduino)?[\s\S]*?```/i.test(content)) errors.push(issue('error', 'paper_code_block', `第${chapter}章正文包含代码块`));
+    if (/\b(?:HAL_|LL_|MX_)[A-Za-z0-9_]*\s*\(|\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\s*\(/.test(content)) errors.push(issue('error', 'paper_function_name', `第${chapter}章使用了函数名或库API介绍程序`));
+  }
+  return errors;
+}
+
+function testEvidenceIssues(project, chapters) {
+  const chapter5 = chapterEntries(chapters).find(([number]) => number === '5')?.[1] || '';
+  const quantitative = /(?:准确率|通过率|误差|响应时间|稳定运行|成功率)[^。；\n]{0,20}\d+(?:\.\d+)?\s*(?:%|℃|ms|s|秒|小时|h)?/g;
+  if (!quantitative.test(chapter5)) return [];
+  const hasTestEvidence = list(project.sources).some(source => source.kind === 'test_record') || list(project.facts).some(fact => fact.type === 'test' && ['confirmed', 'locked'].includes(fact.status));
+  return hasTestEvidence ? [] : [issue('error', 'paper_unsupported_test_metric', '测试章节包含量化结论，但没有已确认测试记录作为依据')];
+}
+
+/** Final deterministic gate. Semantic review should run separately after this. */
+export function runFinalQualityChecks({ project = {}, chapters = {}, outline = [], references = [], bibliography = null, artifacts = [], abstractCn = '', abstractEn = '', minimumBodyChars = MIN_FINAL_BODY_CHARS } = {}) {
+  const errors = [];
+  const warnings = [];
+  const factResult = runFactChecks(project, { phase: 'paper' });
+  errors.push(...factResult.errors);
+  warnings.push(...factResult.warnings);
+
+  const entries = chapterEntries(chapters);
+  const expectedChapters = list(outline).length || 6;
+  if (entries.filter(([, content]) => content).length < expectedChapters) errors.push(issue('error', 'paper_chapters_missing', '论文章节未全部生成'));
+  for (const [number, value] of entries) {
+    if (!value) errors.push(issue('error', 'paper_chapter_empty', `第${number}章内容为空`));
+    const chapterObject = Array.isArray(chapters)
+      ? chapters.find(item => String(item.number || item.chapterNumber) === number)
+      : typeof chapters[number] === 'object' ? chapters[number] : null;
+    if (chapterObject && !['confirmed', 'locked'].includes(chapterObject.status)) errors.push(issue('error', 'paper_chapter_unlocked', `第${number}章尚未确认锁定`));
+    if (chapterObject?.inputRevision && project.factRevision && chapterObject.inputRevision !== project.factRevision) errors.push(issue('error', 'paper_chapter_stale', `第${number}章依据旧事实版本生成`));
+  }
+
+  const effectiveBodyChars = countEffectiveBodyChars(chapters);
+  if (effectiveBodyChars < minimumBodyChars) errors.push(issue('error', 'paper_body_too_short', `正文有效字数为${effectiveBodyChars}，不得低于${minimumBodyChars}`));
+
+  const citationResult = validateReferences({ references, chapters, bibliography, requireAllSelected: true });
+  errors.push(...citationResult.errors.map(item => ({ severity: 'error', ...item })));
+  warnings.push(...citationResult.warnings.map(item => ({ severity: 'warning', ...item })));
+
+  const artifactResult = validateArtifacts(artifacts, chapters);
+  errors.push(...artifactResult.errors);
+  warnings.push(...artifactResult.warnings);
+  errors.push(...codeLikeIssues(chapters));
+  errors.push(...testEvidenceIssues(project, chapters));
+
+  const duplicates = duplicateParagraphs(chapters);
+  duplicates.forEach(item => errors.push(issue('error', 'paper_duplicate_paragraph', `第${item.chapter}章与第${item.firstChapter}章存在完全重复段落`)));
+
+  if (!text(abstractCn)) errors.push(issue('error', 'paper_cn_abstract_missing', '中文摘要尚未生成'));
+  if (!text(abstractEn)) errors.push(issue('error', 'paper_en_abstract_missing', '英文摘要尚未生成'));
+  if (text(abstractCn) && /\[\d+\]/.test(abstractCn)) errors.push(issue('error', 'paper_abstract_citation', '摘要不得出现参考文献引用'));
+
+  const unresolved = list(project.conflicts).filter(item => item.status !== 'resolved');
+  if (unresolved.some(item => item.severity === 'blocking')) errors.push(issue('error', 'paper_conflict_remaining', '最终稿仍存在阻断冲突'));
+
+  return {
+    valid: errors.length === 0,
+    status: errors.length ? 'draft' : 'final',
+    errors,
+    warnings,
+    metrics: {
+      effectiveBodyChars,
+      minimumBodyChars,
+      chapters: entries.filter(([, content]) => content).length,
+      citations: citationResult.occurrences.length,
+      artifacts: list(artifacts).length,
+      duplicateParagraphs: duplicates.length,
+      openBlockingConflicts: factResult.metrics.openBlockingConflicts,
+    },
+    orderedReferences: citationResult.orderedReferences,
+  };
+}
+
+const Rules = Object.freeze({
+  RULES_VERSION,
+  MIN_FINAL_BODY_CHARS,
+  SCHEME_LEVELS,
+  SCHEME_IRON_RULES,
+  SCHEME_SYSTEM_PROMPT,
+  PAPER_BASE_SYSTEM_PROMPT,
+  buildDefaultOutline,
+  flattenOutline,
+  buildWordTargets,
+  buildChapterContracts,
+  makeArtifactSpec,
+  parseReferences,
+  validateReferences,
+  parseSchemeResult,
+  validateSchemeResult,
+  runFactChecks,
+  stripNonBody,
+  countEffectiveBodyChars,
+  runFinalQualityChecks,
+});
+
+export default Rules;
+
