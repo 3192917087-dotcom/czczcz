@@ -49,8 +49,8 @@
         <div class="home-hero">
           <div class="hero-copy">
             <span class="eyebrow">面向单片机毕业设计</span>
-            <h1 id="home-title">先把方案定准，再一键生成论文</h1>
-            <p>围绕同一个项目完成方案设计、资料核对和目录确认。点击一次即可自动写完整篇、检查质量并下载标准 DOCX 文档，不需要逐章反复操作。</p>
+            <h1 id="home-title">方案设计与论文写作，都可以单独使用</h1>
+            <p>没有方案时可以先生成项目方案；已经有自己的设计方案、任务书或程序时，可直接进入论文写作。点击一次即可自动写完整篇、检查质量并下载标准 DOCX 文档。</p>
             <div class="hero-actions">
               <button class="button button-primary" id="btn-start-scheme" type="button">开始方案设计</button>
               <button class="button button-secondary" id="btn-start-paper" type="button">已有资料，直接写论文</button>
@@ -114,7 +114,7 @@
               <span class="status-pill status-neutral" id="home-paper-status">未开始</span>
             </div>
             <h2>论文写作</h2>
-            <p>先确认资料和目录，再点击一次生成完整论文；系统会自动写作、检查并返回符合本科论文通用版式的 DOCX 文档。</p>
+            <p>无需先使用网站生成方案。填写自己的题目、器件、功能和设计资料后，系统会自动写作、检查并返回符合本科论文通用版式的 DOCX 文档。</p>
             <ol class="compact-steps">
               <li><span>1</span>资料确认</li>
               <li><span>2</span>事实核对</li>
@@ -447,14 +447,14 @@
                 <div>
                   <span class="step-label">第 1 步</span>
                   <h2 id="paper-step-1-title">把已有资料一次放进来</h2>
-                  <p>系统会自动分类和提取，但不会未经确认就写入论文。</p>
+                   <p>可直接使用自己的方案和资料，不需要先完成网站的方案设计。</p>
                 </div>
                 <span class="status-pill status-required" id="paper-material-status">等待资料</span>
               </div>
 
               <div class="notice notice-info" id="paper-plan-source-notice">
                 <strong id="paper-plan-source-title">可以直接开始</strong>
-                <p id="paper-plan-source-description">如果已有确认方案，会自动带入题目、器件和功能；没有方案也可以上传资料继续。</p>
+                <p id="paper-plan-source-description">自己的方案、任务书、器件和功能清单都可以直接使用；网站方案只在你主动选择时带入。</p>
               </div>
 
               <div class="material-grid" id="paper-material-grid">
@@ -873,7 +873,7 @@
         <legend>选择起点</legend>
         <div class="choice-grid choice-grid-two">
           <label class="choice-card" for="new-project-start-plan"><input id="new-project-start-plan" name="new-project-start" type="radio" value="plan" checked><span><strong>从方案设计开始</strong><small>适合题目和器件还没有完全确定</small></span></label>
-          <label class="choice-card" for="new-project-start-paper"><input id="new-project-start-paper" name="new-project-start" type="radio" value="paper"><span><strong>直接开始论文</strong><small>适合已有任务书、代码或原理图</small></span></label>
+          <label class="choice-card" for="new-project-start-paper"><input id="new-project-start-paper" name="new-project-start" type="radio" value="paper"><span><strong>直接开始论文</strong><small>已有自己的方案即可直接使用，无需网站方案</small></span></label>
         </div>
       </fieldset>
       <div class="dialog-actions">
@@ -933,4 +933,3 @@
   <script type="module" src="app.js?v=20260815-1"></script>
 </body>
 </html>
-
