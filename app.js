@@ -39,6 +39,22 @@ function makeId(prefix = 'item') {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function schemeInputSignatureFor(value) {
+  return JSON.stringify({
+    title: value?.title || '',
+    background: value?.background || '',
+    requirements: value?.requirements || '',
+    level: value?.level || 'B',
+    sourceMode: value?.sourceMode || 'create',
+    sourceText: value?.sourceText || '',
+    preferences: value?.preferences || {},
+  });
+}
+
+function currentSchemeInputSignature() {
+  return schemeInputSignatureFor(project);
+}
+
 function emptyProject() {
   const now = nowIso();
   return {
@@ -75,6 +91,7 @@ function emptyProject() {
       },
       confirmedAt: '',
       inputRevision: '',
+      inputSignature: '',
     },
     materials: {
       devicesText: '',
@@ -103,6 +120,8 @@ function emptyProject() {
     },
     paper: {
       stage: 1,
+      sourceMode: 'independent',
+      sourceSchemeRevision: '',
       targetChars: 20000,
       activeChapter: '1',
       chapters: {},
@@ -173,8 +192,15 @@ function normalizeProject(value) {
     || (normalized.scheme.closures.length > 0 && ['reviewing', 'confirmed'].includes(normalized.audit.status));
   normalized.scheme.relationsStage = preservePaperRelations ? 'paper' : 'not-started';
   if (!preservePaperRelations) normalized.scheme.closures = [];
-  normalized.materials.devicesText = normalized.scheme.devices.join('\n');
-  normalized.materials.functionsText = normalized.scheme.functions.join('\n');
+  if (normalized.scheme.markdown && !normalized.scheme.inputSignature) {
+    normalized.scheme.inputSignature = schemeInputSignatureFor(normalized);
+  }
+  if (!normalized.materials.devicesText && normalized.paper.sourceMode === 'scheme') {
+    normalized.materials.devicesText = normalized.scheme.devices.join('\n');
+  }
+  if (!normalized.materials.functionsText && normalized.paper.sourceMode === 'scheme') {
+    normalized.materials.functionsText = normalized.scheme.functions.join('\n');
+  }
   return normalized;
 }
 
@@ -517,8 +543,26 @@ function applySchemeLists(deviceValues, functionValues) {
     closures,
   });
   if (project.scheme.relationsStage !== 'paper') project.scheme.closures = [];
-  project.materials.devicesText = project.scheme.devices.join('\n');
-  project.materials.functionsText = project.scheme.functions.join('\n');
+}
+
+function paperDevices() {
+  return unique(lines(project.materials.devicesText));
+}
+
+function paperFunctions() {
+  return unique(lines(project.materials.functionsText));
+}
+
+function paperMaterialsReady() {
+  return Boolean(project.title) && paperDevices().length > 0 && paperFunctions().length > 0;
+}
+
+function paperSchemeText() {
+  return project.paper.sourceMode === 'scheme' ? project.scheme.markdown || '' : '';
+}
+
+function paperClosureSummary() {
+  return project.paper.sourceMode === 'scheme' ? closureSummaryRows() : [];
 }
 
 function stripThink(text) {
@@ -594,9 +638,6 @@ function hideBusy() {
 
 function getCurrentStatus() {
   if (!project.title) return { label: '还没有项目', next: '从方案设计或论文资料开始' };
-  if (project.scheme.markdown && !isSchemeReadyForPaper()) {
-    return { label: '方案待确认', next: '查看完整方案并决定是否使用' };
-  }
   if (project.paper?.quality?.blocking?.length === 0 && project.paper.status === 'final') {
     return { label: '论文内容检查通过', next: '可以导出最终稿' };
   }
@@ -627,16 +668,14 @@ function renderHome() {
   if (dateNode) dateNode.textContent = project.updatedAt ? `最近保存：${new Date(project.updatedAt).toLocaleString('zh-CN')}` : '';
   const summaryNode = $('current-project-summary');
   if (summaryNode) summaryNode.textContent = project.title
-    ? `已整理 ${project.scheme.devices.length} 个器件、${project.scheme.functions.length} 项功能；${status.next}。`
+    ? `论文资料已整理 ${paperDevices().length} 个器件、${paperFunctions().length} 项功能；${status.next}。`
     : '创建项目后，这里会显示你做到哪一步、还有什么需要处理。';
   const planStatus = $('home-plan-status');
   if (planStatus) planStatus.textContent = project.scheme.status === 'confirmed' ? '方案已确认' : project.scheme.markdown ? '待确认' : '未开始';
   const paperStatus = $('home-paper-status');
-  if (paperStatus) paperStatus.textContent = !isSchemeReadyForPaper() && project.scheme.markdown
-    ? '等待方案确认'
-    : Object.values(project.paper.chapters || {}).some(chapter => chapter?.content)
-      ? '写作中'
-      : project.audit.status === 'confirmed' ? '资料已确认' : '未开始';
+  if (paperStatus) paperStatus.textContent = Object.values(project.paper.chapters || {}).some(chapter => chapter?.content)
+    ? '写作中'
+    : project.audit.status === 'confirmed' ? '资料已确认' : '可独立开始';
   const continueButton = $('btn-continue');
   if (continueButton) continueButton.textContent = project.title ? '继续上次工作' : '开始新项目';
   const clearButton = $('btn-clear-current-project');
@@ -722,10 +761,10 @@ function renderSchemeBasics(panel) {
       <div class="scheme-entry-card">
         <div class="form-grid">
           <label class="field field-wide"><span>设计题目 <b>必填</b></span><input id="scheme-title" maxlength="100" value="${escapeHtml(project.title)}" placeholder="例如：基于 STM32 的智能温室控制系统"></label>
-          <label class="field field-wide"><span>你已经知道的信息或必须实现的要求</span><textarea id="scheme-requirements" rows="7" placeholder="可以写使用场景、功能要求、老师要求或已确定器件；不清楚的地方留空即可">${escapeHtml([project.background, project.requirements].filter(Boolean).join('\n'))}</textarea></label>
+          <label class="field field-wide"><span>补充信息和必须实现的要求 <b>优先级最高</b></span><textarea id="scheme-requirements" rows="7" placeholder="可以写使用场景、功能要求、老师要求或已确定器件；这里的明确要求优先于A/B/C等级">${escapeHtml([project.background, project.requirements].filter(Boolean).join('\n'))}</textarea><small>等级只用于补充你没有说明的内容，不会覆盖这里填写的器件、功能、通信方式或限制。</small></label>
         </div>
         <details class="scheme-more-options"><summary>更多偏好（可选）</summary><div class="form-grid">
-          <fieldset class="field field-wide level-picker"><legend>项目难度</legend>${['A','B','C'].map(level => `<label><input type="radio" name="scheme-level" value="${level}" ${project.level === level ? 'checked' : ''}><span>${level} 级<small>${level === 'A' ? '较复杂，通常含联网平台' : level === 'B' ? '中等，完成较丰富功能' : '基础，完成采集与控制'}</small></span></label>`).join('')}</fieldset>
+          <fieldset class="field field-wide level-picker"><legend>项目难度 <small>仅作为未填写内容的参考</small></legend>${['A','B','C'].map(level => `<label><input type="radio" name="scheme-level" value="${level}" ${project.level === level ? 'checked' : ''}><span>${level} 级<small>${level === 'A' ? '较复杂，通常含联网平台' : level === 'B' ? '中等，完成较丰富功能' : '基础，完成采集与控制'}</small></span></label>`).join('')}</fieldset>
           <label class="field"><span>主控偏好</span><input id="scheme-mcu" value="${escapeHtml(project.preferences.mcu)}" placeholder="留空由AI推荐"></label>
           <label class="field"><span>显示器偏好</span><input id="scheme-display" value="${escapeHtml(project.preferences.display)}" placeholder="例如：0.96寸OLED"></label>
           <label class="field"><span>供电方式</span><input id="scheme-power" value="${escapeHtml(project.preferences.power)}" placeholder="留空由AI推荐"></label>
@@ -795,7 +834,7 @@ function captureSchemeBasics() {
       closure.status = 'needs_review';
       closure.confirmedAt = '';
     });
-    invalidateIfFactsChanged('__scheme-input-changed__');
+    invalidateIfFactsChanged(previousFacts);
   } else {
     invalidateIfFactsChanged(previousFacts);
   }
@@ -906,7 +945,7 @@ function renderSchemeDocumentHtml() {
 function renderSchemeResultPage(panel) {
   const resultCurrent = project.scheme.markdown
     && ['generated', 'confirmed'].includes(project.scheme.status)
-    && project.scheme.inputRevision === project.revision;
+    && project.scheme.inputSignature === currentSchemeInputSignature();
   if (!resultCurrent) {
     schemeStep = 1;
     renderScheme();
@@ -985,6 +1024,7 @@ function isSchemeReadyForPaper() {
   return project.scheme.status === 'confirmed'
     && Boolean(project.title)
     && Boolean(project.scheme.markdown)
+    && project.scheme.inputSignature === currentSchemeInputSignature()
     && unresolvedSchemeConflicts().length === 0;
 }
 
@@ -1232,11 +1272,10 @@ function saveImportedScheme() {
     warnings: [],
     confirmedAt: '',
     inputRevision: project.revision,
+    inputSignature: currentSchemeInputSignature(),
     aiReview: { status: 'not-run', verdict: '', summary: '已有方案已按原文保存', changes: [], issues: [], reviewedAt: '' },
   });
   project.scheme.closures = [];
-  project.materials.devicesText = project.scheme.devices.join('\n');
-  project.materials.functionsText = project.scheme.functions.join('\n');
   project.audit = { status: 'not-run', issues: [], summary: '', confirmedAt: '', inputRevision: '' };
   project.outline.confirmedAt = '';
   project.paper.quality = null;
@@ -1307,7 +1346,7 @@ async function generateScheme() {
   }
   project.consents.schemeAiReviewDisclosure = true;
   saveProject({ immediate: true });
-  const userMessage = `【工作模式】create\n【题目】${project.title}\n【用户已知信息和要求】${project.requirements || '未填写'}\n【等级】${project.level}\n【主控偏好】${project.preferences.mcu || '自动推荐'}\n【显示器偏好】${project.preferences.display || '自动判断'}\n【供电偏好】${project.preferences.power || '自动推荐'}\n\n请生成完整、清楚、可直接使用的项目方案。`;
+  const userMessage = `【工作模式】create\n【题目】${project.title}\n【最高优先级：用户补充信息和必须实现的要求】\n${project.requirements || '未填写'}\n【次级参考：难度等级】${project.level}（只补充用户未说明的内容，不得覆盖、删减或替换上面的明确要求）\n【主控偏好】${project.preferences.mcu || '自动推荐'}\n【显示器偏好】${project.preferences.display || '自动判断'}\n【供电偏好】${project.preferences.power || '自动推荐'}\n\n若补充信息与等级惯例不一致，以补充信息为准，不要为凑等级数量添加无关功能。请生成完整、清楚、可直接使用的项目方案。`;
   requestController = new AbortController();
   showBusy('正在生成详细方案', 'AI会检查题目、器件、功能和总体结构是否完整');
   try {
@@ -1340,11 +1379,6 @@ async function generateScheme() {
     const devices = deviceRecords.map(device => device.label);
     const functions = functionRecords.map(func => func.name);
     if (!deviceRecords.length || !functionRecords.length) throw new Error('生成结果缺少器件或功能，请重新生成');
-    const limits = { A: [10, 15], B: [7, 10], C: [3, Infinity] };
-    const [min, max] = limits[project.level] || [3, Infinity];
-    if (sourceMode === 'create' && (functions.length < min || functions.length > max)) {
-      throw new Error(`${project.level} 级方案功能数量不符合规则，请重新生成`);
-    }
     const rawConflicts = stripInternalSchemeLevelText(Array.isArray(parsed.conflicts) ? parsed.conflicts : []);
     const structured = stripInternalSchemeLevelText(normalizeKnownValues({
       topic: parsed.topic || project.title,
@@ -1375,11 +1409,10 @@ async function generateScheme() {
       ],
       aiReview: { status: 'passed', verdict: 'pass', summary: '方案结构检查通过', changes: [], issues: [], reviewedAt: nowIso() },
       inputRevision: project.revision,
+      inputSignature: currentSchemeInputSignature(),
     });
     project.scheme.closures = [];
     project.scheme.markdown = buildSchemeDocumentText(structured);
-    project.materials.devicesText = devices.join('\n');
-    project.materials.functionsText = functions.join('\n');
     saveProject({ immediate: true });
     schemeStep = 2;
     renderScheme();
@@ -1404,7 +1437,7 @@ function confirmScheme() {
   const issues = [];
   if (!project.title) issues.push('方案题目尚未填写');
   if (!project.scheme.markdown) issues.push('方案正文尚未生成');
-  if (!['generated', 'confirmed'].includes(project.scheme.status) || project.scheme.inputRevision !== project.revision) issues.push('方案资料已经修改，请重新生成或保存');
+  if (!['generated', 'confirmed'].includes(project.scheme.status) || project.scheme.inputSignature !== currentSchemeInputSignature()) issues.push('方案资料已经修改，请重新生成或保存');
   unresolvedSchemeConflicts().forEach(item => issues.push(`方案冲突待处理：${item.detail}`));
   if (issues.length) {
     toast(issues[0], 'error');
@@ -1416,11 +1449,22 @@ function confirmScheme() {
   project.scheme.status = 'confirmed';
   project.scheme.confirmedAt = confirmedAt;
   project.scheme.aiReview = { status: 'passed', verdict: 'pass', summary: '方案已确认使用', changes: [], issues: [], reviewedAt: confirmedAt };
-  project.revision = `facts-${Date.now()}`;
   project.scheme.inputRevision = project.revision;
-  project.materials.devicesText = project.scheme.devices.join('\n');
-  project.materials.functionsText = project.scheme.functions.join('\n');
-  project.paper.stage = 1;
+  project.scheme.inputSignature = currentSchemeInputSignature();
+  const paperHasOwnWork = Boolean(project.materials.devicesText || project.materials.functionsText || project.materials.sourceNotes)
+    || project.audit.status !== 'not-run'
+    || Boolean(project.outline.confirmedAt)
+    || Object.values(project.paper.chapters || {}).some(chapter => chapter?.content);
+  if (!paperHasOwnWork) {
+    const previousFacts = factsSignature();
+    project.materials.devicesText = project.scheme.devices.join('\n');
+    project.materials.functionsText = project.scheme.functions.join('\n');
+    project.materials.sourceNotes = project.scheme.markdown;
+    project.paper.sourceMode = 'scheme';
+    project.paper.sourceSchemeRevision = project.scheme.inputSignature;
+    project.paper.stage = 1;
+    invalidateIfFactsChanged(previousFacts);
+  }
   saveProject({ immediate: true });
   toast('方案已确认，接下来补充论文资料并进行细化核对', 'success');
   setView('paper', 1);
@@ -1449,14 +1493,17 @@ function renderPaper() {
 
 function renderPaperMaterials(panel) {
   const materials = project.materials;
-  const schemeLocked = project.scheme.status === 'confirmed';
+  const canImportScheme = isSchemeReadyForPaper();
+  const usingScheme = project.paper.sourceMode === 'scheme' && canImportScheme;
   panel.innerHTML = `
-    <div class="panel-heading"><div><span class="step-kicker">第 1 步</span><h2>把论文需要的实际资料集中放进来</h2><p>方案只提供项目方向；器件与功能的对应关系、连接、程序和测试会从这里开始由AI细化核对。</p></div><span class="status-pill">${project.scheme.status === 'confirmed' ? '已带入完整方案' : '可直接录入资料'}</span></div>
-    ${schemeLocked ? `<div class="notice notice-info">完整方案已作为上游资料带入。这里可以根据原理图、源程序和实物情况修正器件与功能清单，不会要求你返回方案阶段逐项分配。</div>` : ''}
+    <div class="panel-heading"><div><span class="step-kicker">第 1 步</span><h2>把论文需要的实际资料集中放进来</h2><p>论文功能可以独立使用。已有自己的设计方案时，直接填写或粘贴资料，不需要先用网站生成方案。</p></div><span class="status-pill">${usingScheme ? '已带入网站方案' : '论文独立模式'}</span></div>
+    <div class="notice notice-info">论文资料与方案模块相互独立：你在这里修改题目、器件、功能和说明，不会改动已经生成的方案。${canImportScheme ? '如需复用网站方案，可点击下方按钮一键带入。' : ''}</div>
+    ${canImportScheme ? `<div class="panel-actions compact-actions"><button class="btn btn-secondary" type="button" data-action="use-scheme-for-paper">带入已确认的网站方案</button></div>` : ''}
     <div class="form-grid">
       <label class="field field-wide"><span>论文题目 <b>必填</b></span><input id="paper-title" value="${escapeHtml(project.title)}" placeholder="题目会在全文保持一致"></label>
-      <label class="field"><span>实际器件清单 <b>必填</b><small>已从方案初步提取，一行一个，可按实物修正</small></span><textarea id="paper-devices" rows="10">${escapeHtml(materials.devicesText || project.scheme.devices.join('\n'))}</textarea></label>
-      <label class="field"><span>实际功能清单 <b>必填</b><small>已从方案初步提取，一行一个，可按最终项目修正</small></span><textarea id="paper-functions" rows="10">${escapeHtml(materials.functionsText || project.scheme.functions.join('\n'))}</textarea></label>
+      <label class="field"><span>实际器件清单 <b>必填</b><small>一行一个，以你在这里填写的内容为准</small></span><textarea id="paper-devices" rows="10" placeholder="例如：STM32F103C8T6\n0.96寸OLED\nDHT11">${escapeHtml(materials.devicesText)}</textarea></label>
+      <label class="field"><span>实际功能清单 <b>必填</b><small>一行一个，以你在这里填写的内容为准</small></span><textarea id="paper-functions" rows="10" placeholder="例如：温湿度采集\n数据显示\n超限报警">${escapeHtml(materials.functionsText)}</textarea></label>
+      <label class="field field-wide"><span>已有方案、任务书或补充设计说明</span><textarea id="paper-source-notes" rows="10" placeholder="可直接粘贴你自己设计的完整方案、任务书要求或其他说明；AI写论文时会把这里的内容作为重要依据。">${escapeHtml(materials.sourceNotes)}</textarea></label>
       <label class="field field-wide"><span>原理图连接关系或硬件说明</span><textarea id="paper-connections" rows="8" placeholder="例如：DHT11 数据端接主控 PA1；OLED 使用 I²C 通信……">${escapeHtml(materials.connectionText)}</textarea></label>
       <label class="field field-wide"><span>单片机源程序或程序逻辑</span><textarea id="paper-code" rows="10" placeholder="可以粘贴源程序。正文只会提取业务逻辑，不会插入代码或使用函数名介绍。">${escapeHtml(materials.codeText)}</textarea><label class="file-button">选择 C、H、TXT 文件<input id="paper-code-files" type="file" accept=".c,.h,.txt,.ino,.cpp" multiple hidden></label></label>
       <label class="field field-wide"><span>参考文献</span><textarea id="paper-references" rows="8" placeholder="一行一篇：作者｜题目｜摘要（摘要没有可以留空）">${escapeHtml(materials.referencesText)}</textarea><small>仅用于第一章，每篇只引用一次，系统不会联网补文献。</small></label>
@@ -1465,6 +1512,23 @@ function renderPaperMaterials(panel) {
       <label class="field"><span>实物照片和待插图说明</span><textarea id="paper-photo-notes" rows="7" placeholder="写明有哪些实物图、功能展示图；图片后续由你在 WPS 中插入">${escapeHtml(materials.photoNotes)}</textarea></label>
     </div>
     <div class="panel-actions"><button class="btn btn-secondary" type="button" data-action="go-home">返回首页</button><button class="btn btn-primary" type="button" data-action="save-paper-materials">保存资料并开始核对</button></div>`;
+}
+
+function useSchemeForPaper() {
+  if (!isSchemeReadyForPaper()) {
+    toast('当前没有已确认的网站方案可带入', 'error');
+    return;
+  }
+  const previousFacts = factsSignature();
+  project.materials.devicesText = project.scheme.devices.join('\n');
+  project.materials.functionsText = project.scheme.functions.join('\n');
+  project.materials.sourceNotes = project.scheme.markdown;
+  project.paper.sourceMode = 'scheme';
+  project.paper.sourceSchemeRevision = project.scheme.inputSignature;
+  invalidateIfFactsChanged(previousFacts);
+  saveProject({ immediate: true });
+  renderPaper();
+  toast('已带入网站方案，之后仍可在论文中独立修改', 'success');
 }
 
 function capturePaperMaterials() {
@@ -1476,16 +1540,12 @@ function capturePaperMaterials() {
     return false;
   }
   const previousFacts = factsSignature();
-  if (title !== project.title && project.scheme.status === 'confirmed') {
-    toast('论文题目需与已确认方案保持一致；如需改题，请先回方案页修改', 'error');
-    return false;
-  }
   project.title = title;
-  applySchemeLists(devices, functions);
   project.materials = {
     ...project.materials,
-    devicesText: project.scheme.devices.join('\n'),
-    functionsText: project.scheme.functions.join('\n'),
+    devicesText: devices.join('\n'),
+    functionsText: functions.join('\n'),
+    sourceNotes: $('paper-source-notes')?.value.trim() || '',
     connectionText: $('paper-connections')?.value.trim() || '',
     codeText: $('paper-code')?.value.trim() || '',
     referencesText: $('paper-references')?.value.trim() || '',
@@ -1493,6 +1553,12 @@ function capturePaperMaterials() {
     testInfo: $('paper-test-info')?.value.trim() || '',
     photoNotes: $('paper-photo-notes')?.value.trim() || '',
   };
+  if (project.paper.sourceMode === 'scheme') {
+    const changedFromScheme = devices.join('\n') !== project.scheme.devices.join('\n')
+      || functions.join('\n') !== project.scheme.functions.join('\n')
+      || title !== project.scheme.structured?.topic;
+    if (changedFromScheme) project.paper.sourceMode = 'independent';
+  }
   invalidateIfFactsChanged(previousFacts);
   project.paper.stage = 2;
   saveProject({ immediate: true });
@@ -1502,20 +1568,9 @@ function capturePaperMaterials() {
 function factsSignature() {
   return JSON.stringify({
     title: project.title,
-    devices: project.scheme.devices,
-    functions: project.scheme.functions,
-    functionClosures: project.scheme.closures.map(closure => ({
-      functionId: closure.functionId,
-      inputDeviceIds: [...(closure.inputDeviceIds || [])].sort(),
-      processingDeviceIds: [...(closure.processingDeviceIds || [])].sort(),
-      outputDeviceIds: [...(closure.outputDeviceIds || [])].sort(),
-      supportDeviceIds: [...(closure.supportDeviceIds || [])].sort(),
-      processDescription: closure.processDescription,
-      verificationMethod: closure.verificationMethod,
-      status: closure.status,
-    })).sort((left, right) => left.functionId.localeCompare(right.functionId)),
-    schemeConflicts: schemeConflicts().map(item => ({ id: item.id, resolved: item.resolved, resolution: item.resolution }))
-      .sort((left, right) => left.id.localeCompare(right.id)),
+    devices: paperDevices(),
+    functions: paperFunctions(),
+    sourceNotes: project.materials.sourceNotes,
     connections: project.materials.connectionText,
     code: project.materials.codeText,
     tests: project.materials.testInfo,
@@ -1547,8 +1602,8 @@ function invalidateIfFactsChanged(previousSignature) {
 function localFactIssues() {
   const issues = [];
   if (!project.title) issues.push({ severity: 'blocking', title: '论文题目缺失', detail: '请先填写并确认论文题目。' });
-  if (!project.scheme.devices.length) issues.push({ severity: 'blocking', title: '器件清单缺失', detail: '至少需要明确主控和核心器件。' });
-  if (!project.scheme.functions.length) issues.push({ severity: 'blocking', title: '功能清单缺失', detail: '至少需要一项实际实现功能。' });
+  if (!paperDevices().length) issues.push({ severity: 'blocking', title: '器件清单缺失', detail: '至少需要明确主控和核心器件。' });
+  if (!paperFunctions().length) issues.push({ severity: 'blocking', title: '功能清单缺失', detail: '至少需要一项实际实现功能。' });
   if (!project.materials.connectionText) issues.push({ severity: 'confirm', title: '连接关系尚未提供', detail: '硬件章节只能采用保守描述，最终稿前建议补充。' });
   if (!project.materials.codeText) issues.push({ severity: 'confirm', title: '源程序尚未提供', detail: '软件章节只能按已确认功能描述通用业务流程。' });
   if (!project.materials.testInfo) issues.push({ severity: 'confirm', title: '测试记录尚未提供', detail: '测试数据和操作过程需要在最终稿前确认。' });
@@ -1576,8 +1631,8 @@ function renderFactAudit(panel) {
     <div class="panel-heading"><div><span class="step-kicker">第 2 步</span><h2>先解决资料之间的不一致</h2><p>系统会把题目、器件、连接、程序和功能放在一起核对；常见固定事实也会先给出建议，再由你确认。</p></div><span class="status-pill ${blocking ? 'is-danger' : ''}">${issues.length ? `${blocking} 项必须解决` : '尚未检查'}</span></div>
     ${project.audit.summary ? `<div class="notice notice-info">${escapeHtml(project.audit.summary)}</div>` : ''}
     <div class="issue-list">${issues.length ? issues.map(renderIssueCard).join('') : '<div class="empty-state"><span>✓</span><h3>等待资料核对</h3><p>点击下方按钮后，系统会集中列出需要确认的内容。</p></div>'}</div>
-    <label class="ai-disclosure-check"><input id="paper-ai-audit-consent" type="checkbox" ${project.consents.paperFactAuditDisclosure ? 'checked' : ''}> 我知道：点击AI检查后，论文题目、器件与功能清单、连接说明、程序文字和测试记录会发送给已配置的AI服务进行核对。</label>
-        <div class="panel-actions"><button class="btn btn-secondary" type="button" data-action="paper-step" data-step="1">返回补充资料</button><button class="btn btn-secondary" id="ai-audit-facts" type="button" data-action="run-fact-audit">${issues.length ? '重新检查资料' : 'AI 检查资料'}</button>${issues.length ? '<button class="btn btn-primary" type="button" data-action="confirm-facts">确认已处理并继续</button>' : ''}</div>`;
+    <label class="ai-disclosure-check"><input id="paper-ai-audit-consent" type="checkbox" ${project.consents.paperFactAuditDisclosure ? 'checked' : ''}> 我知道：点击AI检查后，论文题目、已有方案或任务书说明、器件与功能清单、连接说明、程序文字和测试记录会发送给已配置的AI服务进行核对。</label>
+        <div class="panel-actions"><button class="btn btn-secondary" type="button" data-action="paper-step" data-step="1">返回补充资料</button><button class="btn btn-secondary" id="ai-audit-facts" type="button" data-action="run-fact-audit">${project.audit.status === 'reviewing' ? '重新检查资料' : 'AI 检查资料'}</button>${project.audit.status === 'reviewing' ? '<button class="btn btn-primary" type="button" data-action="confirm-facts">确认已处理并继续</button>' : ''}</div>`;
 }
 
 function renderIssueCard(issue) {
@@ -1593,9 +1648,9 @@ function renderIssueCard(issue) {
 }
 
 async function runFactAudit() {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('请先查看并确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('请先填写论文题目、器件清单和功能清单', 'error');
     return;
   }
   if (!$('paper-ai-audit-consent')?.checked) {
@@ -1612,9 +1667,10 @@ async function runFactAudit() {
     const prompt = `你是单片机本科论文的项目事实审查员。请比较用户提供的题目、器件、功能、连接关系和程序逻辑，找出真正会导致硬件、软件、测试或论文前后不一致的问题。固定通信方式等可靠常识可以作为建议，但不能替用户确认实际引脚、阈值、地址、电压或测试数据。\n\n只返回 JSON：\n{"summary":"一句话结论","issues":[{"severity":"blocking|confirm|writing","title":"问题","detail":"不同资料写了什么或缺少什么","impact":"受影响章节","suggestion":"如何确认"}]}\nblocking 只用于题目、主控、核心器件、实际接口/连接、关键功能闭环的冲突。不要输出 Markdown。`;
     const context = {
       title: project.title,
-      devices: project.scheme.devices,
-      functions: project.scheme.functions,
-      confirmedFunctionClosures: closureSummaryRows(),
+      devices: paperDevices(),
+      functions: paperFunctions(),
+      designSchemeOrTaskNotes: project.materials.sourceNotes || '未提供',
+      confirmedFunctionClosures: paperClosureSummary(),
       connections: project.materials.connectionText || '未提供',
       sourceCodeOrLogic: (project.materials.codeText || '未提供').slice(0, 30000),
       testInfo: project.materials.testInfo || '未提供',
@@ -1694,8 +1750,8 @@ function confirmFacts() {
 }
 
 function fallbackOutline() {
-  const devices = project.scheme.devices.slice(0, 8);
-  const functions = project.scheme.functions.slice(0, 8);
+  const devices = paperDevices().slice(0, 8);
+  const functions = paperFunctions().slice(0, 8);
   const deviceSections = devices.map((item, index) => `3.${index + 4}.${1} ${item.replace(/[（(].*$/, '')}电路设计`).join('\n');
   const softwareSections = functions.slice(0, 6).map((item, index) => `4.${index + 4}.${1} ${item.slice(0, 20)}程序逻辑设计`).join('\n');
   const testSections = functions.map((item, index) => `5.4.${index + 1} ${item.slice(0, 20)}功能测试`).join('\n');
@@ -1707,8 +1763,8 @@ function buildDefaultOutline() {
   if (typeof builder === 'function') {
     try {
       const result = builder({
-        devices: project.scheme.devices,
-        functions: project.scheme.functions,
+        devices: paperDevices(),
+        functions: paperFunctions(),
         schoolOutline: project.materials.schoolOutline || null,
       });
       if (Array.isArray(result) && result.some(item => item && typeof item === 'object')) {
@@ -1740,9 +1796,9 @@ function renderOutline(panel) {
 }
 
 function confirmOutline() {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('方案已发生变化，请先重新确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('请先填写论文题目、器件清单和功能清单', 'error');
     return;
   }
   if (project.audit.status !== 'confirmed' || project.audit.inputRevision !== project.revision) {
@@ -1797,7 +1853,7 @@ function chapterTargets() {
   }
   if (typeof Rules.buildWordTargets === 'function' && typeof Rules.buildDefaultOutline === 'function') {
     try {
-      const outline = Rules.buildDefaultOutline({ devices: project.scheme.devices, functions: project.scheme.functions });
+      const outline = Rules.buildDefaultOutline({ devices: paperDevices(), functions: paperFunctions() });
       const plan = Rules.buildWordTargets(outline, {
         requestedTarget: target,
         complexity: project.level === 'A' ? 'complex' : project.level === 'C' ? 'simple' : 'medium',
@@ -2104,8 +2160,8 @@ function uniqueFigurePlaceholderCount(value, chapterId) {
 }
 
 function artifactPlanForChapter(id) {
-  const devices = project.scheme.devices;
-  const functions = project.scheme.functions;
+  const devices = paperDevices();
+  const functions = paperFunctions();
   if (id === '2') {
     return `本章图位：每个核心器件在首次完成选型介绍后预留器件图片。器件清单：${devices.join('、')}。格式示例：“如图2-x所示”→“【图2-x 器件名称实物图——待插入】”→“【非正文·图片准备说明｜定稿前删除】说明应拍摄或查找的视角、需要清楚展示的型号与外观特征。【非正文结束】”。`;
   }
@@ -2133,10 +2189,11 @@ function chapterPrompt(chapter, mode = 'generate') {
   const context = {
     title: project.title,
     level: project.level,
-    devices: project.scheme.devices,
-    functions: project.scheme.functions,
-    confirmedFunctionClosures: closureSummaryRows(),
-    scheme: project.scheme.markdown,
+    devices: paperDevices(),
+    functions: paperFunctions(),
+    confirmedFunctionClosures: paperClosureSummary(),
+    scheme: paperSchemeText(),
+    designSchemeOrTaskNotes: project.materials.sourceNotes || '未提供',
     connections: project.materials.connectionText || '未提供，未知连接不得编造具体引脚',
     codeLogic: (project.materials.codeText || '未提供，只能描述通用业务流程').slice(0, 35000),
     tests: project.materials.testInfo || '未提供，量化测试结论必须作为待确认内容',
@@ -2228,9 +2285,9 @@ async function generateChapterAutomatically(chapter, signal) {
 }
 
 async function generateChapter(mode = 'generate') {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('方案已发生变化，请先重新确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('请先填写论文题目、器件清单和功能清单', 'error');
     return;
   }
   const chapter = project.paper.chapters[activeChapter];
@@ -2301,14 +2358,16 @@ function auditChapterLocal(chapter) {
     if (/```\s*(?:c|cpp|c\+\+|ino|java)?\b/i.test(text)) issues.push({ severity: 'blocking', message: '软件章节出现了程序代码，请改为业务文字和流程图说明' });
     if (/\b[A-Za-z_]\w{2,}\s*\(/.test(text)) issues.push({ severity: 'confirm', message: '检测到疑似函数名，请确认是否应改为中文业务描述' });
   }
-  if (chapter.id === '2' && project.scheme.devices.length) {
-    const missed = project.scheme.devices.filter(device => !text.includes(device.replace(/[（(].*$/, '').trim()));
+  const devices = paperDevices();
+  const functions = paperFunctions();
+  if (chapter.id === '2' && devices.length) {
+    const missed = devices.filter(device => !text.includes(device.replace(/[（(].*$/, '').trim()));
     if (missed.length) issues.push({ severity: 'confirm', message: `器件选型可能遗漏：${missed.join('、')}` });
   }
   if (chapter.id === '3' && !/待插入图|电路图/.test(text)) issues.push({ severity: 'confirm', message: '硬件章节没有识别到电路图占位说明' });
   if (chapter.id === '4' && !/流程图|开始.*判断|→/.test(text)) issues.push({ severity: 'confirm', message: '软件章节没有识别到详细流程图说明' });
   if (chapter.id === '5') {
-    const missingFunctions = project.scheme.functions.filter(item => !text.includes(item.slice(0, Math.min(8, item.length))));
+    const missingFunctions = functions.filter(item => !text.includes(item.slice(0, Math.min(8, item.length))));
     if (missingFunctions.length) issues.push({ severity: 'confirm', message: `测试章节可能没有逐项回应 ${missingFunctions.length} 项功能` });
   }
   issues.push(...figureUsageIssues(text));
@@ -2431,10 +2490,12 @@ function fallbackQuality() {
   const ch3Figures = uniqueFigurePlaceholderCount(ch3, 3);
   const ch4Flows = (ch4.match(/流程图|【非正文·流程图/g) || []).length;
   const ch5Figures = uniqueFigurePlaceholderCount(ch5, 5);
-  if (project.scheme.devices.length && ch2Figures < project.scheme.devices.length) blocking.push(`第二章器件图片占位不足：识别到 ${ch2Figures} 个，应逐项覆盖 ${project.scheme.devices.length} 个器件`);
-  if (project.scheme.devices.length && ch3Figures < Math.max(1, project.scheme.devices.length - 1)) blocking.push(`第三章电路图占位不足：识别到 ${ch3Figures} 个，尚未覆盖主要硬件模块`);
-  if (project.scheme.functions.length && ch4Flows < Math.max(1, project.scheme.functions.length)) blocking.push(`第四章流程图说明不足：识别到 ${ch4Flows} 处，尚未覆盖主要功能逻辑`);
-  if (project.scheme.functions.length && ch5Figures < project.scheme.functions.length) blocking.push(`第五章功能展示图占位不足：识别到 ${ch5Figures} 个，应逐项覆盖 ${project.scheme.functions.length} 项功能`);
+  const devices = paperDevices();
+  const functions = paperFunctions();
+  if (devices.length && ch2Figures < devices.length) blocking.push(`第二章器件图片占位不足：识别到 ${ch2Figures} 个，应逐项覆盖 ${devices.length} 个器件`);
+  if (devices.length && ch3Figures < Math.max(1, devices.length - 1)) blocking.push(`第三章电路图占位不足：识别到 ${ch3Figures} 个，尚未覆盖主要硬件模块`);
+  if (functions.length && ch4Flows < Math.max(1, functions.length)) blocking.push(`第四章流程图说明不足：识别到 ${ch4Flows} 处，尚未覆盖主要功能逻辑`);
+  if (functions.length && ch5Figures < functions.length) blocking.push(`第五章功能展示图占位不足：识别到 ${ch5Figures} 个，应逐项覆盖 ${functions.length} 项功能`);
   if (lines(project.materials.connectionText).length >= 3 && !/表\s*3[-－—]\d+|连接关系表/.test(ch3)) confirm.push('连接信号较多，但第三章没有识别到连接关系表，请确认正文是否已经集中说明清楚');
   const allBody = Object.values(project.paper.chapters || {}).map(chapter => chapter.content || '').join('\n');
   if (/待插入/.test(allBody) && !/【非正文·/.test(allBody)) blocking.push('存在图表占位，但缺少与正文区分的详细绘制或拍摄说明');
@@ -2445,79 +2506,12 @@ function fallbackQuality() {
 }
 
 function runQuality() {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('方案已发生变化，请先重新确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('请先填写论文题目、器件清单和功能清单', 'error');
     return;
   }
-  Object.values(project.paper.chapters || {}).forEach(chapter => {
-    if (chapter.content) chapter.issues = auditChapterLocal(chapter);
-  });
-  let result = fallbackQuality();
-  const checker = Rules.runFinalQualityChecks || Rules.auditFinalPaper;
-  if (typeof checker === 'function') {
-    try {
-      const deviceRecords = project.scheme.deviceRecords.map(device => ({
-        id: device.id,
-        model: device.model,
-        name: device.model,
-        role: device.role || '',
-      }));
-      const sourceRecords = project.materials.testInfo ? [{ id: 'source-test', kind: 'test_record' }] : [];
-      const closureByFunction = new Map(project.scheme.closures.map(closure => [closure.functionId, closure]));
-      const structuredProject = {
-        title: project.title,
-        topic: project.title,
-        status: project.audit.status === 'confirmed' ? 'locked' : 'draft',
-        factRevision: project.revision,
-        sources: sourceRecords,
-        facts: [],
-        devices: deviceRecords,
-        functions: project.scheme.functionRecords.map((func, index) => {
-          const closure = closureByFunction.get(func.id);
-          return {
-          id: func.id,
-          name: func.name,
-          deviceIds: closure ? closureLinkedIds(closure) : [],
-          softwareEvidenceIds: project.materials.codeText ? ['source-code'] : [],
-          testId: project.materials.testInfo ? 'source-test' : '',
-        };
-        }),
-        conflicts: [
-          ...project.audit.issues.filter(issue => issue.severity === 'blocking' && !issue.resolved).map(issue => ({ ...issue, status: 'open' })),
-          ...unresolvedSchemeConflicts().map(item => ({ ...item, status: 'open' })),
-        ],
-        hardwareReport: { status: project.audit.status === 'confirmed' ? 'confirmed' : 'draft' },
-        programReport: { status: project.audit.status === 'confirmed' ? 'confirmed' : 'draft' },
-      };
-      if (project.materials.codeText) structuredProject.sources.push({ id: 'source-code', kind: 'source_code' });
-      const outline = Object.keys(project.paper.chapters || {}).sort((a, b) => Number(a) - Number(b)).map(id => ({
-        number: id,
-        title: project.paper.chapters[id]?.title || CHAPTER_TITLES[id],
-      }));
-      const custom = checker({
-        project: structuredProject,
-        chapters: project.paper.chapters,
-        outline,
-        references: referencesForPrompt(),
-        artifacts: [],
-        abstractCn: project.paper.abstractCn,
-        abstractEn: project.paper.abstractEn,
-      });
-      if (custom && typeof custom === 'object') {
-        result = {
-          ...result,
-          ...custom,
-          blocking: unique([...(result.blocking || []), ...(custom.blocking || custom.mustResolve || []), ...(custom.errors || []).map(item => item.message || String(item))]),
-          confirm: unique([...(result.confirm || []), ...(custom.confirm || custom.shouldConfirm || []), ...(custom.warnings || []).map(item => item.message || String(item))]),
-          writing: unique([...(result.writing || []), ...(custom.writing || custom.optimization || [])]),
-        };
-      }
-    } catch (error) { console.warn(error); }
-  }
-  project.paper.quality = result;
-  project.paper.status = result.blocking.length ? 'reviewing' : 'final';
-  saveProject({ immediate: true });
+  const result = runQualityCore();
   renderPaper();
   toast(result.blocking.length ? `检查完成，还有 ${result.blocking.length} 项必须解决` : '论文内容检查通过，可以导出最终稿', result.blocking.length ? 'info' : 'success');
 }
@@ -2563,7 +2557,8 @@ function runQualityCore() {
         number: id,
         title: project.paper.chapters[id]?.title || CHAPTER_TITLES[id],
       }));
-      const canUseStructuredFactGate = project.scheme.relationsStage === 'paper'
+      const canUseStructuredFactGate = project.paper.sourceMode === 'scheme'
+        && project.scheme.relationsStage === 'paper'
         && project.scheme.closures.length === project.scheme.functionRecords.length
         && project.scheme.closures.every(closure => closure.status === 'confirmed');
       const custom = canUseStructuredFactGate ? checker({
@@ -2634,9 +2629,9 @@ function renderQualityGroups(result) {
 }
 
 async function generateAbstracts() {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('方案已发生变化，请先重新确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('请先填写论文题目、器件清单和功能清单', 'error');
     return;
   }
   const chapters = Object.values(project.paper.chapters || {}).filter(chapter => chapter.content);
@@ -2700,9 +2695,9 @@ async function generateFullPaper() {
     toast('已有生成任务正在进行，请稍候', 'info');
     return;
   }
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('请先查看并确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('请先填写论文题目、器件清单和功能清单', 'error');
     return;
   }
   if (project.audit.status !== 'confirmed' || project.audit.inputRevision !== project.revision) {
@@ -3173,9 +3168,9 @@ function bibliographyHtml() {
 }
 
 async function exportPaper(finalVersion) {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-    toast('方案已发生变化，请先重新确认方案', 'error');
+  if (!paperMaterialsReady()) {
+    setView('paper', 1);
+    toast('论文资料不完整，请先填写题目、器件和功能', 'error');
     return false;
   }
   if (finalVersion && (!project.paper.quality || project.paper.quality.blocking.length)) {
@@ -3235,12 +3230,10 @@ function exportBackup() {
 }
 
 function continueProject() {
-  if (!isSchemeReadyForPaper()) {
-    setView('scheme', project.scheme.markdown ? 2 : 1);
-  } else if (Object.values(project.paper.chapters || {}).some(chapter => chapter?.content)) setView('paper', 4);
+  if (Object.values(project.paper.chapters || {}).some(chapter => chapter?.content)) setView('paper', 4);
   else if (project.outline.confirmedAt) setView('paper', 4);
   else if (project.audit.status === 'confirmed') setView('paper', 3);
-  else if (project.scheme.status === 'confirmed') setView('paper', 1);
+  else if (paperMaterialsReady() || project.materials.sourceNotes) setView('paper', 1);
   else if (project.scheme.markdown) setView('scheme', 2);
   else setView('scheme', 1);
 }
@@ -3304,6 +3297,7 @@ function createProjectFromDialog() {
   const start = qs('input[name="new-project-start"]:checked')?.value || 'plan';
   project = emptyProject();
   project.title = title;
+  project.paper.sourceMode = 'independent';
   saveProject({ immediate: true });
   closeDialog('dialog-new-project');
   setView(start === 'paper' ? 'paper' : 'scheme', 1);
@@ -3317,12 +3311,7 @@ function bindEvents() {
     if (action === 'go-home') setView('home');
     if (action === 'start-scheme') setView('scheme', 1);
     if (action === 'start-paper') {
-      if (project.scheme.markdown && !isSchemeReadyForPaper()) {
-        setView('scheme', 2);
-        toast('请先查看并确认当前方案', 'info');
-      } else {
-        setView('paper', 1);
-      }
+      setView('paper', 1);
     }
     if (action === 'continue-project') continueProject();
     if (action === 'new-project') resetProject();
@@ -3333,7 +3322,7 @@ function bindEvents() {
       const nextStep = Number(button.dataset.step);
       const resultCurrent = project.scheme.markdown
         && ['generated', 'confirmed'].includes(project.scheme.status)
-        && project.scheme.inputRevision === project.revision;
+        && project.scheme.inputSignature === currentSchemeInputSignature();
       if (nextStep === 2 && !resultCurrent) {
         schemeStep = 1;
         renderScheme();
@@ -3345,9 +3334,9 @@ function bindEvents() {
     }
     if (action === 'paper-step') {
       const nextStep = Number(button.dataset.step);
-      if (nextStep > 1 && !isSchemeReadyForPaper()) {
-        setView('scheme', project.scheme.markdown ? 2 : 1);
-        toast('请先查看并确认方案，再继续论文流程', 'info');
+      if (nextStep > 1 && !paperMaterialsReady()) {
+        setView('paper', 1);
+        toast('请先填写论文题目、器件清单和功能清单', 'info');
       } else {
         captureChapterEditor();
         setView('paper', nextStep);
@@ -3366,6 +3355,7 @@ function bindEvents() {
     if (action === 'export-customer-scheme') exportCustomerScheme();
     if (action === 'copy-scheme') copyScheme();
     if (action === 'edit-scheme-relations') setView('scheme', 2);
+    if (action === 'use-scheme-for-paper') useSchemeForPaper();
     if (action === 'save-paper-materials' && capturePaperMaterials()) setView('paper', 2);
     if (action === 'run-fact-audit') runFactAudit();
     if (action === 'confirm-facts') confirmFacts();
@@ -3454,4 +3444,3 @@ function init() {
 }
 
 init();
-
