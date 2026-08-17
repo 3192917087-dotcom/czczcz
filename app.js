@@ -1,4 +1,4 @@
-import * as Rules from './rules.js';
+import * as Rules from './rules.js?v=20260817-1';
 
 const PAGE_CONFIG = globalThis.MCU_PAGE_CONFIG || {};
 const DEEPSEEK_API_URL = String(PAGE_CONFIG.apiUrl || 'https://api.deepseek.com/chat/completions');
