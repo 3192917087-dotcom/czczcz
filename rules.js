@@ -6,7 +6,7 @@
  * separate from checks that are deterministic.
  */
 
-export const RULES_VERSION = '1.2.1';
+export const RULES_VERSION = '1.3.0';
 export const MIN_FINAL_BODY_CHARS = 18000;
 
 export const SCHEME_LEVELS = Object.freeze({
@@ -30,20 +30,20 @@ export const SCHEME_SYSTEM_PROMPT = String.raw`
 
 【最高优先级】
 1. 题目必须逐字保持，不增删、不改写、不“学术化”。
-2. 用户明确输入 > 用户高级选项 > 等级默认规则 > 常见选型经验。
+2. 用户补充信息框中的明确要求 > 用户高级选项 > 等级参考 > 常见选型经验。补充信息是方案的最高业务依据。
 3. 用户明确指定的器件和功能不得被替换、删除或歪曲；不同材料冲突时不要擅自选择，输出 conflicts 等待用户确认。
 4. 用户没有提供的引脚、阈值、精度、响应时间、地址、电压和测试结果不得写成项目事实。
-5. A/B/C 等级仅供内部控制复杂度。除 JSON 的 level 字段外，overview、architecture、devices、functions、implementationNotes、conflicts 和 warnings 中禁止出现“A级方案”“符合B级要求”“C级难度”等等级说明，不向最终读者解释内部等级。
+5. A/B/C 等级只在用户没有说明的地方提供复杂度参考，绝不是硬性模板。不得仅为了满足等级数量或通信要求，新增、删除、替换用户明确要求的功能和器件。除 JSON 的 level 字段外，overview、architecture、devices、functions、implementationNotes、conflicts 和 warnings 中禁止出现“A级方案”“符合B级要求”“C级难度”等等级说明，不向最终读者解释内部等级。
 
 【工作模式】
-- create：可依据题目、用户要求和难度等级补全合理方案；补充项标记为 ai_suggestion。不得为凑数量拆分同一功能或增加与题目无关的功能。
+- create：先完整落实用户补充信息，再用难度等级补全用户没有说明的内容；补充项标记为 ai_suggestion。用户要求与等级建议不一致时，以用户要求为准，不得将其列为冲突。不得为凑数量拆分同一功能或增加与题目无关的功能。
 - import 或 extract：只能忠实整理已有方案、任务书或开题材料；不按难度等级补功能，不新增、替换或猜测器件型号。原文未说明的选型理由写“原资料未说明”，缺失和矛盾进入 conflicts/warnings，不得伪装成原文事实。
 
 【等级规则】
 - A：10~15 项功能，通常包含云平台或 WiFi/APP 通信、传感器和执行机构。
 - B：7~10 项功能，通常包含无线通信、传感器和执行机构。
 - C：至少 3 项功能，以基础采集和控制为主，不强制增加通信。
-- 等级只用于补足复杂度，不能覆盖用户明确限制，也不能为了凑数量生成与题目无关的功能。
+- 等级只用于补足用户未说明的复杂度。功能数量、联网方式、器件选择与用户补充信息不一致时，一律以用户补充信息为准；不能覆盖用户明确限制，也不能为了凑数量生成与题目无关的功能。
 - 最终方案正文不得提及等级名称、等级规则、功能数量档位或“符合某级方案”等内部判断。
 
 【默认选型铁律】
@@ -815,7 +815,7 @@ export function validateSchemeResult(input, options = {}) {
   if (!functionTexts.length) errors.push({ code: 'scheme_functions_missing', message: '方案缺少功能清单' });
   if (mode === 'create' && (functionTexts.length < limits.minFunctions || functionTexts.length > limits.maxFunctions)) {
     const range = Number.isFinite(limits.maxFunctions) ? `${limits.minFunctions}~${limits.maxFunctions}` : `至少${limits.minFunctions}`;
-    errors.push({ code: 'scheme_function_count', message: `${level}级方案应有${range}项功能，当前为${functionTexts.length}项` });
+    warnings.push({ code: 'scheme_function_count_advisory', message: `等级参考通常为${range}项功能，当前为${functionTexts.length}项；已按用户补充信息优先保留` });
   }
   if (uniqueBy(models).length !== models.length) errors.push({ code: 'scheme_device_duplicate', message: '器件清单存在重复型号或同义重复' });
   if (uniqueBy(functionTexts).length !== functionTexts.length) errors.push({ code: 'scheme_function_duplicate', message: '功能清单存在重复或同义重复' });
@@ -863,9 +863,9 @@ export function validateSchemeResult(input, options = {}) {
     const hasSensor = data.devices.some(item => classifyDevice(item) === 'sensor');
     const hasActuator = data.devices.some(item => classifyDevice(item) === 'actuator');
     const hasWireless = /WiFi|无线|蓝牙|ZigBee|LoRa|NRF24|ESP-01|HC-05|云平台|APP/i.test(outputText);
-    if ((level === 'A' || level === 'B') && (!hasSensor || !hasActuator)) errors.push({ code: 'scheme_level_components', message: `${level}级方案应具备与题目相符的采集和输出/执行能力` });
-    if (level === 'A' && !/WiFi|云平台|APP|小程序|OneNET/i.test(outputText)) errors.push({ code: 'scheme_level_a_network', message: 'A级方案缺少云平台或WiFi/APP通信能力' });
-    if (level === 'B' && !hasWireless) errors.push({ code: 'scheme_level_b_wireless', message: 'B级方案缺少无线通信能力' });
+    if ((level === 'A' || level === 'B') && (!hasSensor || !hasActuator)) warnings.push({ code: 'scheme_level_components_advisory', message: '当前方案没有同时识别到采集和输出能力；若这是用户明确设计则保持不变' });
+    if (level === 'A' && !/WiFi|云平台|APP|小程序|OneNET/i.test(outputText)) warnings.push({ code: 'scheme_level_a_network_advisory', message: '当前方案未加入云平台或WiFi/APP通信；已按用户补充信息优先处理' });
+    if (level === 'B' && !hasWireless) warnings.push({ code: 'scheme_level_b_wireless_advisory', message: '当前方案未加入无线通信；已按用户补充信息优先处理' });
     if (level === 'C' && hasWireless && !/WiFi|无线|蓝牙|ZigBee|LoRa|NRF24|ESP-01|HC-05/i.test(userEvidence)) warnings.push({ code: 'scheme_level_c_extra_wireless', message: 'C级方案自动加入了通信功能，请确认是否确有需要' });
   } else {
     const allowedModels = list(options.allowedDevices).map(item => normalizeKey(typeof item === 'object' ? item.model || item.name : item));
@@ -1122,4 +1122,3 @@ const Rules = Object.freeze({
 });
 
 export default Rules;
-
