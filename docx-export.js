@@ -132,6 +132,16 @@ function normalizePayload(input = {}) {
         ? reference.authors.map(author => cleanText(author, 100)).filter(Boolean).join('，')
         : cleanText(reference?.authors, 300),
       title: cleanText(reference?.title, 500),
+      documentType: cleanText(reference?.documentType || reference?.type, 20).toUpperCase(),
+      source: cleanText(reference?.source || reference?.containerTitle || reference?.publication?.containerTitle, 500),
+      year: cleanText(reference?.year || reference?.publication?.year, 20),
+      volume: cleanText(reference?.volume || reference?.publication?.volume, 50),
+      issue: cleanText(reference?.issue || reference?.publication?.issue, 50),
+      pages: cleanText(reference?.pages || reference?.publication?.pages, 100),
+      institution: cleanText(reference?.institution || reference?.publication?.institution, 500),
+      publisher: cleanText(reference?.publisher || reference?.publication?.publisher, 500),
+      place: cleanText(reference?.place || reference?.publication?.place, 200),
+      formatted: cleanText(reference?.formatted || reference?.formattedCitation || reference?.raw, 2000).replace(/^\s*\[\d+\]\s*/, ''),
     }))
     .filter(reference => reference.authors || reference.title);
   return {
@@ -414,7 +424,22 @@ function keywordParagraph(keywords) {
 }
 
 function referenceParagraph(reference, index) {
-  const text = `[${index + 1}] ${[reference.authors, reference.title].filter(Boolean).join('：')}`;
+  let entry = reference.formatted;
+  if (!entry) {
+    const head = `${reference.authors}${reference.authors ? '. ' : ''}${reference.title}${reference.documentType ? `[${reference.documentType}]` : ''}`;
+    let tail = '';
+    if (reference.documentType === 'J') {
+      tail = `${reference.source}, ${reference.year}, ${reference.volume}${reference.issue ? `(${reference.issue})` : ''}${reference.pages ? `: ${reference.pages}` : ''}`;
+    } else if (reference.documentType === 'D') {
+      tail = `${reference.place ? `${reference.place}: ` : ''}${reference.institution || reference.source}, ${reference.year}`;
+    } else if (reference.documentType === 'M') {
+      tail = `${reference.place ? `${reference.place}: ` : ''}${reference.publisher || reference.source}, ${reference.year}`;
+    } else {
+      tail = [reference.source || reference.institution || reference.publisher, reference.year, reference.volume, reference.issue, reference.pages].filter(Boolean).join(', ');
+    }
+    entry = `${head}${tail ? `. ${tail}` : ''}.`.replace(/\s+([,.:])/g, '$1').replace(/\.{2,}$/g, '.');
+  }
+  const text = `[${index + 1}] ${entry}`;
   return new Paragraph({
     alignment: AlignmentType.JUSTIFIED,
     indent: { left: BODY_FIRST_LINE, hanging: BODY_FIRST_LINE },
