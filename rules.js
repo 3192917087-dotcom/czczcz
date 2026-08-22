@@ -6,7 +6,7 @@
  * separate from checks that are deterministic.
  */
 
-export const RULES_VERSION = '1.3.0';
+export const RULES_VERSION = '1.4.0';
 export const MIN_FINAL_BODY_CHARS = 18000;
 
 export const SCHEME_LEVELS = Object.freeze({
@@ -105,15 +105,15 @@ export const PAPER_BASE_SYSTEM_PROMPT = String.raw`
 【事实与冲突】
 1. 题目逐字不变；主控、器件、接口、引脚、阈值、功能和术语必须全文一致。
 2. 不得新增、替换或删除项目事实。发现冲突、关键缺失或低可信推断时停止本节生成，返回待确认问题，不得自行选择。
-3. 器件固有知识可以解释，但项目实际采用的接口、引脚、电压、地址、阈值和测试数据必须来自已确认事实。
+3. 器件固有知识可以解释，但项目实际采用的接口、引脚、电压、地址和阈值必须来自已确认事实。测试数据优先使用用户记录；没有记录时仅可按已确认器件能力与合理实验条件生成保守、内部一致且便于用户调整的量化结果。
 
 【章节职责唯一】
 - 第1章回答为什么做：背景、意义、国内外现状、主要研究内容和论文结构。
 - 第2章回答做什么及为什么这样选：需求、总体架构、功能、主要器件选型和最终方案。
 - 第3章回答硬件怎样实现：连接关系、电气条件、电路工作原理和硬件图位。
 - 第4章回答软件怎样实现：总体架构、业务流程、判断逻辑、异常处理、流程图/时序图/公式。
-- 第5章回答如何调试与验证：环境、步骤、现象、结果分析和功能展示图位。
-- 第6章回答完成了什么、有什么不足、怎样改进。
+- 第5章回答如何调试与验证：环境、步骤、量化数据表、现象、结果分析和功能展示图位。用户未提供实测数据时，允许依据器件能力、功能逻辑和常见实验条件给出保守且内部一致的可编辑测试数据，不能省略数据、单位和表格，也不能写明显超出器件能力的数值。
+- 第6章回答完成了什么、有哪些边界条件、怎样改进。核心功能已经列入项目事实时，不得写成“未完成、尚未实现、没有实现”；不足只能描述精度、环境、样本范围、交互或后续扩展等有边界的限制。
 - 允许必要的简短前后呼应，禁止换词重复、跨章完整复述和通过器件参数堆砌凑字数。
 
 【标题层级与输出】
@@ -122,6 +122,7 @@ export const PAPER_BASE_SYSTEM_PROMPT = String.raw`
 3. 禁止使用单个“#”以及“####”或更深层级；标题编号必须与本章目录一致。
 4. 标题单独占一行，标题下直接写正文，不把标题井号留在普通段落中。
 5. “论文组织结构”中“第1章为……、第2章为……”等逐章说明必须写成普通正文段落，禁止添加任何标题井号；一级章标题只能由系统统一生成。
+6. 同类器件、同类电路、同类程序或同类测试应归入同一个二级标题，用段落、分点或表格展开；不得为每个器件、每项功能机械创建三级标题。三级标题只在一个二级标题下确有两个以上不同逻辑主题时使用，每个二级标题通常不超过3个三级标题。
 
 【软件正文】
 1. 正文不插入源代码。
@@ -142,14 +143,16 @@ export const PAPER_BASE_SYSTEM_PROMPT = String.raw`
 1. 只使用用户文献库，不联网检索、不新增文献。
 2. 引用只出现在第一章，主要位于国内外研究现状。
 3. 每篇文献全文只引用一次；每个观点句只放一个 [n]；禁止合并引用。
-4. 按正文实际出现顺序从 [1] 连续编号，文末参考文献同步排序。
+4. 生成阶段若文献记录提供 citationToken，必须在对应观点句使用该令牌，不自行猜数字；系统将按正文实际出现顺序转换为从 [1] 连续的编号，并同步排序文末参考文献。
 5. 正文作者必须与编号对应文献一致。无摘要文献只能保守描述题目体现的研究方向。
+6. 文献库必须保留完整出版信息：期刊文献应含期刊名、年份、卷（期）和页码；学位论文应含学位授予单位和年份；其他类型应按对应 GB/T 7714 项目保留来源与年份。不得只输出作者和题名。
 
 【写作质量】
 - 使用“本文”“本系统”“该模块”，语言正式、清楚、符合本科工程设计水平。
 - 允许少量相关的宏观行业铺垫，但必须尽快收束到题目场景，不编政策、市场或统计数据。
 - 没有可靠依据不写创新点；普通集成只能写主要工作或设计特点。
-- 没有测试数据时不生成无依据的精度、误差、响应时间、成功率和稳定运行时长。
+- 第5章必须有量化测试数据表。没有用户数据时，可依据已确认器件能力和合理实验条件推定保守数值；同一指标在正文、表格和结论中必须一致，避免100%成功率、零误差等绝对化结果。
+- 致谢不得出现任何人名、学校名或单位名，不使用“时光荏苒、白驹过隙、岁月如梭”等模板开头；应围绕选题分析、硬件调试、程序验证和论文整理等实际环节表达概括性感谢。
 - 学校未明确要求时不生成本章小结。
 - 当前调用只完成章节合同指定的小节，不越界、不提前写后续章节。
 `.trim();
@@ -193,10 +196,10 @@ const RESPONSIBILITIES = Object.freeze({
   5: Object.freeze({
     purpose: '说明调试环境、功能验证方法、结果与分析',
     allowedTypes: ['function', 'test', 'test_record', 'photo'],
-    forbiddenTopics: ['新增器件', '新增功能', '重复程序设计', '无依据量化性能'],
+    forbiddenTopics: ['新增器件', '新增功能', '重复程序设计', '超出器件能力或前后矛盾的量化性能'],
   }),
   6: Object.freeze({
-    purpose: '概括实际工作、完成情况、客观不足和一一对应的改进方向',
+    purpose: '概括实际完成工作、说明有边界的限制条件和一一对应的优化方向，不否定已确认核心功能',
     allowedTypes: ['project_goal', 'function', 'test', 'limitation', 'future_work'],
     forbiddenTopics: ['新增功能', '重复器件参数', '重复程序流程', '重复测试步骤'],
   }),
@@ -362,49 +365,57 @@ export function buildDefaultOutline({ devices = [], functions = [], schoolOutlin
         return acc;
       }, {});
 
-  const selectionDevices = devs.filter(item => item.core !== false && classifyDevice(item) !== 'power');
-  const selectionChildren = dynamicSections(selectionDevices, '2.4', item => {
-    const kind = classifyDevice(item);
-    if (kind === 'controller') return '主控制器选型';
-    return `${item.model || item.name}选型`;
-  });
+  const selectionChildren = [];
+  if (groups.controller?.length) selectionChildren.push(section('2.4.1', '主控制器选型'));
+  if ([...(groups.sensor || []), ...(groups.actuator || [])].length) {
+    selectionChildren.push(section(`2.4.${selectionChildren.length + 1}`, '传感与执行器件选型'));
+  }
+  if ([...(groups.display || []), ...(groups.communication || []), ...(groups.other || [])].length) {
+    selectionChildren.push(section(`2.4.${selectionChildren.length + 1}`, '显示、通信与辅助器件选型'));
+  }
 
   const hardwareGroups = [];
   if (groups.sensor?.length) {
-    hardwareGroups.push({ title: '传感器电路设计', items: groups.sensor, itemTitle: item => `${item.model || item.name}电路设计` });
+    hardwareGroups.push({ title: '传感器电路设计', items: groups.sensor });
   }
   if (groups.actuator?.length) {
-    hardwareGroups.push({ title: '执行器驱动电路设计', items: groups.actuator, itemTitle: item => `${item.model || item.name}驱动电路设计` });
+    hardwareGroups.push({ title: '执行器驱动电路设计', items: groups.actuator });
   }
   const displayAndComm = [...(groups.display || []), ...(groups.communication || [])];
   if (displayAndComm.length) {
-    hardwareGroups.push({ title: '显示与通信电路设计', items: displayAndComm, itemTitle: item => `${item.model || item.name}电路设计` });
+    hardwareGroups.push({ title: '显示与通信电路设计', items: displayAndComm });
   }
   if (groups.other?.length) {
-    hardwareGroups.push({ title: '其他功能电路设计', items: groups.other, itemTitle: item => `${item.model || item.name}电路设计` });
+    hardwareGroups.push({ title: '其他功能电路设计', items: groups.other });
   }
   const hardwareChildren = hardwareGroups.map((group, index) => {
     const number = `3.${index + 4}`;
-    return section(number, group.title, dynamicSections(group.items, number, group.itemTitle));
+    return section(number, group.title);
   });
 
   const softwareGroups = [];
   if (functionGroups.sensing?.length) {
-    softwareGroups.push({ title: '传感器驱动程序设计', items: functionGroups.sensing, itemTitle: item => `${cleanFunctionTitle(item.name)}程序设计` });
+    softwareGroups.push({ title: '传感器驱动程序设计', items: functionGroups.sensing });
   }
   if (functionGroups.displayOrCommunication?.length) {
-    softwareGroups.push({ title: '显示与通信程序设计', items: functionGroups.displayOrCommunication, itemTitle: item => `${cleanFunctionTitle(item.name)}程序设计` });
+    softwareGroups.push({ title: '显示与通信程序设计', items: functionGroups.displayOrCommunication });
   }
   const controlAndOther = [...(functionGroups.controlOrAlarm || []), ...(functionGroups.other || [])];
   if (controlAndOther.length) {
-    softwareGroups.push({ title: '控制及报警逻辑设计', items: controlAndOther, itemTitle: item => `${cleanFunctionTitle(item.name)}逻辑设计` });
+    softwareGroups.push({ title: '控制及报警逻辑设计', items: controlAndOther });
   }
   const softwareChildren = softwareGroups.map((group, index) => {
     const number = `4.${index + 4}`;
-    return section(number, group.title, dynamicSections(group.items, number, group.itemTitle));
+    return section(number, group.title);
   });
 
-  const testChildren = dynamicSections(funcs, '5.4', item => `${cleanFunctionTitle(item.name)}功能测试`);
+  const testChildren = [];
+  if ([...(functionGroups.sensing || []), ...(functionGroups.displayOrCommunication || [])].length) {
+    testChildren.push(section('5.4.1', '采集、显示与通信功能测试'));
+  }
+  if ([...(functionGroups.controlOrAlarm || []), ...(functionGroups.other || [])].length) {
+    testChildren.push(section(`5.4.${testChildren.length + 1}`, '控制、报警与联动功能测试'));
+  }
 
   return [
     section('1', '绪论', [
@@ -559,59 +570,176 @@ function normalizeAuthors(value) {
   return text(value).split(/[，,；;、]+/).map(text).filter(Boolean);
 }
 
+function cleanReferenceNumber(value) {
+  return text(value).replace(/^\s*\[\d+\]\s*/, '').trim();
+}
+
+function referenceType(value) {
+  const token = text(value).toUpperCase().replace(/\s+/g, '');
+  const aliases = { 期刊: 'J', 学位论文: 'D', 专著: 'M', 图书: 'M', 会议: 'C', 网络: 'EB/OL' };
+  return aliases[token] || (/^(?:J|D|M|C|N|P|R|S|Z|EB\/OL)$/.test(token) ? token : '');
+}
+
+function metadataFromFormattedLine(value) {
+  const formatted = cleanReferenceNumber(value);
+  const marker = formatted.match(/\[([A-Z]+(?:\/[A-Z]+)?)\]/i);
+  const documentType = referenceType(marker?.[1]);
+  const beforeMarker = marker ? formatted.slice(0, marker.index).replace(/[.．]\s*$/, '') : formatted;
+  const separators = [...beforeMarker.matchAll(/[.．]\s+/g)];
+  const separator = separators.at(-1);
+  const authorsPart = separator ? beforeMarker.slice(0, separator.index) : '';
+  const titlePart = separator ? beforeMarker.slice(separator.index + separator[0].length) : beforeMarker;
+  const afterMarker = marker
+    ? formatted.slice(marker.index + marker[0].length).replace(/^[.．]\s*/, '').replace(/[.．]\s*$/, '')
+    : '';
+  const year = afterMarker.match(/(?:^|[,，]\s*|:\s*)((?:19|20)\d{2})(?=$|[,，.:：\s])/i)?.[1] || '';
+  const source = text(afterMarker.split(/[,，]/)[0]).replace(/^.+?[:：]\s*/, value => value.includes(':') || value.includes('：') ? value.split(/[:：]/).pop() : value);
+  const volumeIssue = year
+    ? afterMarker.match(new RegExp(`${year}\\s*[,，]\\s*([^,，:：.]+?)(?:\\(([^)]+)\\))?\\s*(?=[:：,，.]|$)`))
+    : null;
+  const pages = text(afterMarker.match(/[:：]\s*([A-Za-z]?\d+(?:\s*[-–—]\s*[A-Za-z]?\d+)?)(?=[.．]|$)/)?.[1]).replace(/\s+/g, '');
+  const institution = documentType === 'D'
+    ? text(afterMarker.replace(new RegExp(`[,，]?\\s*${year}.*$`), '').split(/[:：]/).pop())
+    : '';
+  const publisher = documentType === 'M'
+    ? text(afterMarker.replace(new RegExp(`[,，]?\\s*${year}.*$`), '').split(/[:：]/).pop())
+    : '';
+  const place = /[:：]/.test(afterMarker) ? text(afterMarker.split(/[:：]/)[0]) : '';
+  return {
+    formatted,
+    authors: normalizeAuthors(authorsPart),
+    title: text(titlePart),
+    documentType,
+    source,
+    year,
+    volume: text(volumeIssue?.[1]),
+    issue: text(volumeIssue?.[2]),
+    pages,
+    institution,
+    publisher,
+    place,
+  };
+}
+
+function normalizeReferenceRecord(item, index) {
+  const raw = text(item?.raw || item?.rawCitation || item?.formatted || item?.formattedCitation);
+  const inferred = raw ? metadataFromFormattedLine(raw) : {};
+  const documentType = referenceType(item?.documentType || item?.type || inferred.documentType);
+  const publication = item?.publication || {};
+  return {
+    ...item,
+    id: text(item?.id) || `ref-${index + 1}`,
+    authors: normalizeAuthors(item?.authors || item?.author || inferred.authors),
+    title: text(item?.title || inferred.title),
+    documentType,
+    source: text(item?.source || item?.containerTitle || publication.containerTitle || inferred.source),
+    year: text(item?.year || publication.year || inferred.year),
+    volume: text(item?.volume || publication.volume || inferred.volume),
+    issue: text(item?.issue || publication.issue || inferred.issue),
+    pages: text(item?.pages || publication.pages || inferred.pages),
+    institution: text(item?.institution || publication.institution || inferred.institution),
+    publisher: text(item?.publisher || publication.publisher || inferred.publisher),
+    place: text(item?.place || publication.place || inferred.place),
+    doi: text(item?.doi || publication.doi),
+    url: text(item?.url || publication.url),
+    accessDate: text(item?.accessDate || publication.accessDate),
+    abstract: text(item?.abstract),
+    region: ['domestic', 'foreign'].includes(item?.region) ? item.region : 'unknown',
+    directionTags: list(item?.directionTags).map(text).filter(Boolean),
+    selected: item?.selected !== false,
+    originalNumber: Number(item?.originalNumber || index + 1),
+    usedCount: Number(item?.usedCount || 0),
+    raw,
+    formatted: cleanReferenceNumber(item?.formatted || item?.formattedCitation || inferred.formatted || raw),
+  };
+}
+
 function parseReferenceLine(line, index) {
   const raw = text(line);
   const withoutNumber = raw.replace(/^\s*\[(\d+)\]\s*/, '');
   const pipe = withoutNumber.split(/\s*[|｜]\s*/);
   if (pipe.length >= 2) {
-    return {
+    const type = referenceType(pipe[2]);
+    const extended = Boolean(type);
+    return normalizeReferenceRecord({
       id: `ref-${index + 1}`,
       authors: normalizeAuthors(pipe[0]),
       title: text(pipe[1]),
-      abstract: text(pipe[2]),
-      region: /国外|foreign/i.test(pipe[3] || '') ? 'foreign' : /国内|domestic/i.test(pipe[3] || '') ? 'domestic' : 'unknown',
-      directionTags: [],
+      documentType: type,
+      source: extended ? text(pipe[3]) : '',
+      year: extended ? text(pipe[4]) : '',
+      volume: extended ? text(pipe[5]).replace(/\([^)]*\)/g, '') : '',
+      issue: extended ? text(pipe[5]).match(/\(([^)]+)\)/)?.[1] || '' : '',
+      pages: extended ? text(pipe[6]) : '',
+      abstract: extended ? text(pipe[7]) : text(pipe[2]),
+      region: /国外|foreign/i.test(pipe[8] || pipe[3] || '') ? 'foreign' : /国内|domestic/i.test(pipe[8] || pipe[3] || '') ? 'domestic' : 'unknown',
       selected: true,
-      raw,
+      raw: extended ? '' : raw,
       originalNumber: Number(raw.match(/^\s*\[(\d+)\]/)?.[1] || index + 1),
-      usedCount: 0,
-    };
+    }, index);
   }
-  const match = withoutNumber.match(/^(.+?)[.．]\s*(.+?)(?:\[[A-Z/]+\]|[.．]|$)/);
-  return {
+  return normalizeReferenceRecord({
     id: `ref-${index + 1}`,
-    authors: normalizeAuthors(match?.[1] || ''),
-    title: text(match?.[2] || withoutNumber),
-    abstract: '',
-    region: 'unknown',
-    directionTags: [],
-    selected: true,
     raw,
     originalNumber: Number(raw.match(/^\s*\[(\d+)\]/)?.[1] || index + 1),
-    usedCount: 0,
-  };
+  }, index);
 }
 
-/** Parse records supplied as objects, GB/T lines, or "authors | title | abstract | region" lines. */
+/** Parse records supplied as objects, complete GB/T lines, or pipe-delimited records. */
 export function parseReferences(input) {
   if (!input) return [];
   if (Array.isArray(input) && input.every(item => item && typeof item === 'object')) {
-    return input.map((item, index) => ({
-      ...item,
-      id: text(item.id) || `ref-${index + 1}`,
-      authors: normalizeAuthors(item.authors || item.author),
-      title: text(item.title),
-      abstract: text(item.abstract),
-      region: ['domestic', 'foreign'].includes(item.region) ? item.region : 'unknown',
-      directionTags: list(item.directionTags).map(text).filter(Boolean),
-      selected: item.selected !== false,
-      originalNumber: Number(item.originalNumber || index + 1),
-      usedCount: Number(item.usedCount || 0),
-      raw: text(item.raw),
-    }));
+    return input.map(normalizeReferenceRecord);
   }
   const lines = Array.isArray(input) ? input : text(input).split(/\r?\n/);
   return lines.map(text).filter(Boolean).map(parseReferenceLine);
+}
+
+function missingReferenceMetadata(reference) {
+  const missing = [];
+  if (!reference.authors.length) missing.push('作者');
+  if (!reference.title) missing.push('题名');
+  if (!reference.documentType) {
+    missing.push('文献类型');
+    if (!reference.source && !reference.publisher && !reference.institution) missing.push('期刊/学校/出版社');
+    if (!reference.year) missing.push('年份');
+  } else if (reference.documentType === 'J') {
+    if (!reference.source) missing.push('期刊名');
+    if (!reference.year) missing.push('年份');
+    if (!reference.volume) missing.push('卷号');
+    if (!reference.issue) missing.push('期号');
+    if (!reference.pages) missing.push('页码');
+  } else if (reference.documentType === 'D') {
+    if (!reference.institution && !reference.source) missing.push('学位授予单位');
+    if (!reference.year) missing.push('年份');
+  } else if (reference.documentType === 'M') {
+    if (!reference.publisher && !reference.source) missing.push('出版社');
+    if (!reference.year) missing.push('年份');
+  } else if (reference.documentType) {
+    if (!reference.source && !reference.publisher && !reference.institution) missing.push('出版来源');
+    if (!reference.year) missing.push('年份');
+  }
+  return missing;
+}
+
+export function formatReferenceRecord(referenceInput) {
+  const reference = normalizeReferenceRecord(referenceInput || {}, 0);
+  const missing = missingReferenceMetadata(reference);
+  if (reference.formatted && !missing.length) return cleanReferenceNumber(reference.formatted);
+  const authors = reference.authors.join('，');
+  const head = `${authors}${authors ? '. ' : ''}${reference.title}${reference.documentType ? `[${reference.documentType}]` : ''}`;
+  let tail = '';
+  if (reference.documentType === 'J') {
+    tail = `${reference.source}, ${reference.year}, ${reference.volume}${reference.issue ? `(${reference.issue})` : ''}${reference.pages ? `: ${reference.pages}` : ''}`;
+  } else if (reference.documentType === 'D') {
+    tail = `${reference.place ? `${reference.place}: ` : ''}${reference.institution || reference.source}, ${reference.year}`;
+  } else if (reference.documentType === 'M') {
+    tail = `${reference.place ? `${reference.place}: ` : ''}${reference.publisher || reference.source}, ${reference.year}`;
+  } else {
+    tail = [reference.source || reference.institution || reference.publisher, reference.year, reference.volume, reference.issue, reference.pages].filter(Boolean).join(', ');
+  }
+  const formatted = `${head}${tail ? `. ${tail}` : ''}.`.replace(/\s+([,.:])/g, '$1').replace(/\.{2,}$/g, '.');
+  return missing.length ? `${formatted} [出版信息待补充：${missing.join('、')}]` : formatted;
 }
 
 function chapterEntries(chapters) {
@@ -699,7 +827,15 @@ export function validateReferences({ references = [], chapters = {}, bibliograph
     });
   }
   refs.forEach(reference => {
-    if (!reference.authors.length || !reference.title) errors.push({ code: 'reference_incomplete', referenceId: reference.id, message: '参考文献缺少作者或题目' });
+    const missing = missingReferenceMetadata(reference);
+    if (missing.length) {
+      errors.push({
+        code: 'reference_publication_incomplete',
+        referenceId: reference.id,
+        message: `参考文献“${reference.title || reference.id}”缺少${missing.join('、')}，不能只保留作者和题名`,
+        missing,
+      });
+    }
     if (reference.region === 'unknown') warnings.push({ code: 'reference_region_unknown', referenceId: reference.id, message: `请确认“${reference.title}”属于国内还是国外文献` });
   });
 
@@ -1032,14 +1168,29 @@ function codeLikeIssues(chapters) {
 
 function testEvidenceIssues(project, chapters) {
   const chapter5 = chapterEntries(chapters).find(([number]) => number === '5')?.[1] || '';
-  const quantitative = /(?:准确率|通过率|误差|响应时间|稳定运行|成功率)[^。；\n]{0,20}\d+(?:\.\d+)?\s*(?:%|℃|ms|s|秒|小时|h)?/g;
-  if (!quantitative.test(chapter5)) return [];
-  const hasTestEvidence = list(project.sources).some(source => source.kind === 'test_record') || list(project.facts).some(fact => fact.type === 'test' && ['confirmed', 'locked'].includes(fact.status));
-  return hasTestEvidence ? [] : [issue('error', 'paper_unsupported_test_metric', '测试章节包含量化结论，但没有已确认测试记录作为依据')];
+  const result = [];
+  const hasMarkdownTable = /^\s*\|[^\n]+\|\s*\n\s*\|(?:\s*:?-{3,}:?\s*\|)+/m.test(chapter5);
+  const quantities = chapter5.match(/\d+(?:\.\d+)?\s*(?:%|℃|°C|ms|s|秒|分钟|min|h|小时|V|mV|A|mA|lx|ppm|cm|mm|m|次)(?![A-Za-z])/gi) || [];
+  if (!hasMarkdownTable) result.push(issue('error', 'paper_test_table_missing', '第五章缺少量化测试数据表，必须用表格列出测试项目、条件、数据和结论'));
+  if (quantities.length < 3) result.push(issue('error', 'paper_test_quantities_missing', '第五章量化测试数据不足，至少应在测试表和分析中给出多个带单位的可核对数值'));
+  if (/100\s*%|零误差|误差为\s*0(?:\.0+)?\b/.test(chapter5)) result.push(issue('warning', 'paper_test_absolute_result', '测试结果含100%或零误差等绝对化数据，请确认是否符合真实条件'));
+  return result;
+}
+
+function acknowledgmentIssues(value) {
+  const content = text(value);
+  const errors = [];
+  if (!content) return [issue('error', 'paper_acknowledgment_missing', '致谢尚未生成')];
+  if (content.length < 140) errors.push(issue('error', 'paper_acknowledgment_too_short', '致谢内容过短，应结合选题、调试、验证和论文整理等实际环节表达感谢'));
+  if (/时光荏苒|白驹过隙|岁月如梭|光阴似箭|转眼间.*大学/.test(content)) errors.push(issue('error', 'paper_acknowledgment_template', '致谢使用了明显模板化开头，请改为具体、朴实的项目过程表达'));
+  const namedPeople = [...content.matchAll(/(?:感谢|感激|致谢)(?:我的|本人的)?(?:导师|指导教师|老师|教授)?[：:，,\s]*([\u4e00-\u9fff]{2,4})(?:老师|教授|同学|先生|女士)/g)]
+    .map(match => match[1]);
+  if (namedPeople.length) errors.push(issue('error', 'paper_acknowledgment_person_name', `致谢不得出现人名：${uniqueBy(namedPeople).join('、')}`));
+  return errors;
 }
 
 /** Final deterministic gate. Semantic review should run separately after this. */
-export function runFinalQualityChecks({ project = {}, chapters = {}, outline = [], references = [], bibliography = null, artifacts = [], abstractCn = '', abstractEn = '', minimumBodyChars = MIN_FINAL_BODY_CHARS } = {}) {
+export function runFinalQualityChecks({ project = {}, chapters = {}, outline = [], references = [], bibliography = null, artifacts = [], abstractCn = '', abstractEn = '', acknowledgment = '', minimumBodyChars = MIN_FINAL_BODY_CHARS } = {}) {
   const errors = [];
   const warnings = [];
   const factResult = runFactChecks(project, { phase: 'paper' });
@@ -1077,6 +1228,7 @@ export function runFinalQualityChecks({ project = {}, chapters = {}, outline = [
   if (!text(abstractCn)) errors.push(issue('error', 'paper_cn_abstract_missing', '中文摘要尚未生成'));
   if (!text(abstractEn)) errors.push(issue('error', 'paper_en_abstract_missing', '英文摘要尚未生成'));
   if (text(abstractCn) && /\[\d+\]/.test(abstractCn)) errors.push(issue('error', 'paper_abstract_citation', '摘要不得出现参考文献引用'));
+  errors.push(...acknowledgmentIssues(acknowledgment));
 
   const unresolved = list(project.conflicts).filter(item => item.status !== 'resolved');
   if (unresolved.some(item => item.severity === 'blocking')) errors.push(issue('error', 'paper_conflict_remaining', '最终稿仍存在阻断冲突'));
@@ -1112,6 +1264,7 @@ const Rules = Object.freeze({
   buildChapterContracts,
   makeArtifactSpec,
   parseReferences,
+  formatReferenceRecord,
   validateReferences,
   parseSchemeResult,
   validateSchemeResult,
@@ -1122,3 +1275,4 @@ const Rules = Object.freeze({
 });
 
 export default Rules;
+
