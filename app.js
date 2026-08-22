@@ -1,4 +1,4 @@
-import * as Rules from './rules.js?v=20260822-2';
+import * as Rules from './rules.js?v=20260823-1';
 
 const PAGE_CONFIG = globalThis.MCU_PAGE_CONFIG || {};
 const DEEPSEEK_API_URL = String(PAGE_CONFIG.apiUrl || 'https://api.deepseek.com/chat/completions');
@@ -1518,7 +1518,7 @@ function renderPaperMaterials(panel) {
       <label class="field field-wide"><span>已有方案、任务书或补充设计说明</span><textarea id="paper-source-notes" rows="10" placeholder="可直接粘贴你自己设计的完整方案、任务书要求或其他说明；AI写论文时会把这里的内容作为重要依据。">${escapeHtml(materials.sourceNotes)}</textarea></label>
       <label class="field field-wide"><span>原理图连接关系或硬件说明</span><textarea id="paper-connections" rows="8" placeholder="例如：DHT11 数据端接主控 PA1；OLED 使用 I²C 通信……">${escapeHtml(materials.connectionText)}</textarea></label>
       <label class="field field-wide"><span>单片机源程序或程序逻辑</span><textarea id="paper-code" rows="10" placeholder="可以粘贴源程序。正文只会提取业务逻辑，不会插入代码或使用函数名介绍。">${escapeHtml(materials.codeText)}</textarea><label class="file-button">选择 C、H、TXT 文件<input id="paper-code-files" type="file" accept=".c,.h,.txt,.ino,.cpp" multiple hidden></label></label>
-      <label class="field field-wide"><span>参考文献</span><textarea id="paper-references" rows="8" placeholder="优先粘贴完整 GB/T 7714 条目；或：作者｜题目｜J｜期刊名｜年份｜卷(期)｜页码｜摘要｜国内/国外">${escapeHtml(materials.referencesText)}</textarea><small>期刊必须含期刊名、年份、卷（期）和页码；学位论文必须含授予单位和年份。系统不会编造缺失出版信息。</small></label>
+      <label class="field field-wide"><span>参考文献 <small>选填</small></span><textarea id="paper-references" rows="8" placeholder="没有参考文献可留空；有文献时请粘贴完整 GB/T 7714 条目。也可使用：作者｜题目｜J｜期刊名｜年份｜卷(期)｜页码｜摘要｜国内/国外">${escapeHtml(materials.referencesText)}</textarea><small>留空时按“无参考文献模式”正常生成，不写引用编号和文末参考文献；粘贴后只使用你提供的条目，不联网补充、不替换。期刊条目应含期刊名、年份、卷（期）和页码，学位论文应含授予单位和年份。</small></label>
       <label class="field field-wide"><span>学校目录或往届论文目录</span><textarea id="paper-school-outline" rows="8" placeholder="没有可以留空，系统会按项目自动规划">${escapeHtml(materials.schoolOutline)}</textarea></label>
       <label class="field"><span>测试、调试和操作记录</span><textarea id="paper-test-info" rows="7" placeholder="填写使用的工具、软件、操作方法和已有测试数据；没有数据时系统会按器件能力生成保守的量化测试表">${escapeHtml(materials.testInfo)}</textarea></label>
       <label class="field"><span>实物照片和待插图说明</span><textarea id="paper-photo-notes" rows="7" placeholder="写明有哪些实物图、功能展示图；图片后续由你在 WPS 中插入">${escapeHtml(materials.photoNotes)}</textarea></label>
@@ -2011,7 +2011,7 @@ function renderChapters(panel) {
 
 function chapterDuty(id) {
   return {
-    1: '只写背景、意义、国内外研究现状、本文内容和结构。引用只允许出现在本章，并按出现顺序使用。',
+    1: '只写背景、意义、国内外研究现状、本文内容和结构。如用户提供参考文献，只允许在本章按正文首次出现顺序引用；未提供时采用不点名的概括性分析。',
     2: '只详细写需求、系统方案、功能、架构和器件选型，不重复电路连接和程序逻辑。每个核心器件预留器件图片位置。',
     3: '只详细写电气连接、电路工作原理和供电关系。每个独立模块预留电路图；连接复杂时给出关系表。',
     4: '只写开发环境、程序总体流程、器件驱动和功能业务逻辑。不插入代码，不使用函数名或变量名介绍程序。',
@@ -2069,6 +2069,15 @@ function referencesForPrompt() {
   }));
 }
 
+function referenceWritingPolicy(chapterId = '1') {
+  if (String(chapterId) !== '1') return '本章不得出现参考文献引用、作者文献综述或引用编号。';
+  const references = referencesForPrompt();
+  if (!references.length) {
+    return '用户没有提供参考文献，本次按无参考文献模式写作：国内外研究现状采用不点名的概括性分析；不得编造作者、题名或出版信息，不得输出 citationToken、[n] 引用编号或文末参考文献。无文献不会阻止论文生成。';
+  }
+  return `用户已提供 ${references.length} 篇参考文献：必须只使用这些条目，全部在第一章各引用一次；使用每条记录的 citationToken，不自行输出数字编号，不新增、删除、替换、联网检索或猜补出版信息。`;
+}
+
 function normalizeCitationOrder(value) {
   const source = String(value || '');
   const base = parsedReferences();
@@ -2078,13 +2087,15 @@ function normalizeCitationOrder(value) {
   }
   const baseById = new Map(base.map(reference => [reference.id, reference]));
   const previousOrder = (project.paper.referenceOrder || []).map(id => baseById.get(id)).filter(Boolean);
+  const previousIds = new Set(previousOrder.map(reference => reference.id));
+  const numericOrder = [...previousOrder, ...base.filter(reference => !previousIds.has(reference.id))];
   const order = [];
   const rewritten = source.replace(/\{\{cite:([^}]+)\}\}|\[(\d+)\]/g, (full, tokenId, numeric) => {
     const reference = tokenId
       ? baseById.get(String(tokenId).trim())
-      : (previousOrder[Number(numeric) - 1] || base[Number(numeric) - 1]);
+      : numericOrder[Number(numeric) - 1];
     if (!reference) return full;
-    if (order.includes(reference.id)) return '';
+    if (order.includes(reference.id)) return `[${order.indexOf(reference.id) + 1}]`;
     order.push(reference.id);
     return `[${order.length}]`;
   });
@@ -2271,6 +2282,7 @@ function chapterPrompt(chapter, mode = 'generate') {
       citationToken: reference.citationToken,
       fullPublication: formattedReference(reference),
     })) : [],
+    referencePolicy: referenceWritingPolicy(chapter.id),
     confirmedAuditResolutions: project.audit.issues.filter(issue => issue.resolved).map(issue => `${issue.title}：${issue.resolution}`),
   };
   const previous = previousChapterContext(chapter.id);
@@ -2278,7 +2290,7 @@ function chapterPrompt(chapter, mode = 'generate') {
   const extra = mode === 'expand'
     ? `\n【当前正文】\n${chapter.content}\n\n请只补充当前章节缺少的设计依据、原理、逻辑或分析，合并成完整章节。不得简单同义改写凑字数，不得删掉已有可靠内容。`
     : '';
-  return `【论文题目】${project.title}\n【当前任务】撰写第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章内容职责】${chapterDuty(chapter.id)}\n【目标有效字数】约${chapter.target}字\n【本章图表与说明计划】${artifactPlan}\n\n【已确认项目事实】\n${JSON.stringify(context, null, 2)}\n\n${previous}\n${extra}\n\n写作要求：全文围绕题目，符合本科生工程论文水平，专业但不故作高深；适当使用行业背景话术，但必须落回本项目。当前章标题由系统统一生成，不要重复输出；只允许输出本章目录中已有的二、三级标题。论文二级标题严格使用“## 2.1 标题”，三级标题严格使用“### 2.1.1 标题”，不得使用单个“#”或“####”及更深层级。同类器件、电路、程序和测试用段落、分点或表格归纳，不得为每个条目另设三级标题，每个二级标题通常不超过3个三级标题。每张图只允许一次“如图X-X所示”的首次引出、一个正式图位和一段非正文制作说明；后文可以写“由图X-X可知”或“结合图X-X分析”，但不得再次使用“如图所示”或重复插入同一图位。禁止没有明确图号的“如图所示”。图表、流程图或拍摄说明用“【非正文·……｜定稿前删除】”与正文区分。各章节严格履行唯一职责，不能把器件选型、电路、程序和测试内容互相重复。第一章引用必须使用文献记录给出的 citationToken，禁止自行输出数字编号；每篇只使用一次。第六章不得将已确认功能写成未完成、未实现或仅停留在设想。只输出本章正文，不输出写作解释。`;
+  return `【论文题目】${project.title}\n【当前任务】撰写第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章内容职责】${chapterDuty(chapter.id)}\n【目标有效字数】约${chapter.target}字\n【本章图表与说明计划】${artifactPlan}\n\n【已确认项目事实】\n${JSON.stringify(context, null, 2)}\n\n${previous}\n${extra}\n\n写作要求：全文围绕题目，符合本科生工程论文水平，专业但不故作高深；适当使用行业背景话术，但必须落回本项目。当前章标题由系统统一生成，不要重复输出；只允许输出本章目录中已有的二、三级标题。论文二级标题严格使用“## 2.1 标题”，三级标题严格使用“### 2.1.1 标题”，不得使用单个“#”或“####”及更深层级。同类器件、电路、程序和测试用段落、分点或表格归纳，不得为每个条目另设三级标题，每个二级标题通常不超过3个三级标题。每张图只允许一次“如图X-X所示”的首次引出、一个正式图位和一段非正文制作说明；后文可以写“由图X-X可知”或“结合图X-X分析”，但不得再次使用“如图所示”或重复插入同一图位。禁止没有明确图号的“如图所示”。图表、流程图或拍摄说明用“【非正文·……｜定稿前删除】”与正文区分。各章节严格履行唯一职责，不能把器件选型、电路、程序和测试内容互相重复。${referenceWritingPolicy(chapter.id)}第六章不得将已确认功能写成未完成、未实现或仅停留在设想。只输出本章正文，不输出写作解释。`;
 }
 
 function continuationPrompt(chapter, issues = []) {
@@ -2290,7 +2302,7 @@ function continuationPrompt(chapter, issues = []) {
     .filter(item => item.length >= 60 && !item.startsWith('【'))
     .slice(0, 24)
     .map(item => item.slice(0, 90));
-  return `【论文题目】${project.title}\n【当前章节】第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章职责】${chapterDuty(chapter.id)}\n【本章目标】约${chapter.target}字\n【当前有效字数】${countBodyChars(chapter.content)}字\n【本章已有标题】${headings.join('；') || '无'}\n【本章已覆盖段落要点】${paragraphLedger.join('；') || '无'}\n【本章已使用图账本】\n${figureLedger}\n【需要补充的问题】\n${issues.length ? issues.map(item => `- ${item.message || item}`).join('\n') : '- 当前内容尚未达到本章目标，请继续补足目录中尚未充分展开的内容'}\n【已有正文末尾】\n${tail}\n\n请从已有正文之后自然续写，只输出真正缺少的新段落，不要重复已有标题、段落、器件参数、工作原理或章节总结，不要重新输出整章。账本中已有的图号不得再次写“如图X-X所示”，不得重复对应图位或制作说明；需要继续分析时改写为“由图X-X可知”“结合图X-X分析”或“该图中”。禁止没有明确图号的“如图所示”。继续遵守：不编造未知引脚；第五章无实测数据时生成保守量化数据表；不插入代码；只使用目录已有标题，同类内容不得另设三级标题；图表说明用“【非正文·……｜定稿前删除】”区分。`;
+  return `【论文题目】${project.title}\n【当前章节】第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章职责】${chapterDuty(chapter.id)}\n【本章目标】约${chapter.target}字\n【当前有效字数】${countBodyChars(chapter.content)}字\n【本章已有标题】${headings.join('；') || '无'}\n【本章已覆盖段落要点】${paragraphLedger.join('；') || '无'}\n【本章已使用图账本】\n${figureLedger}\n【参考文献规则】${referenceWritingPolicy(chapter.id)}\n【需要补充的问题】\n${issues.length ? issues.map(item => `- ${item.message || item}`).join('\n') : '- 当前内容尚未达到本章目标，请继续补足目录中尚未充分展开的内容'}\n【已有正文末尾】\n${tail}\n\n请从已有正文之后自然续写，只输出真正缺少的新段落，不要重复已有标题、段落、器件参数、工作原理或章节总结，不要重新输出整章。账本中已有的图号不得再次写“如图X-X所示”，不得重复对应图位或制作说明；需要继续分析时改写为“由图X-X可知”“结合图X-X分析”或“该图中”。禁止没有明确图号的“如图所示”。继续遵守：不编造未知引脚；第五章无实测数据时生成保守量化数据表；不插入代码；只使用目录已有标题，同类内容不得另设三级标题；图表说明用“【非正文·……｜定稿前删除】”区分。`;
 }
 
 function paragraphFingerprint(value) {
@@ -2391,13 +2403,13 @@ ${issues.map(item => `- ${item.message || item.detail || item}`).join('\n') || '
 【已确认功能】${paperFunctions().join('；')}
 【已确认连接和硬件说明】${project.materials.connectionText || '未录入；未知引脚不得猜测，但不能据此否定项目已完成'}
 【已有方案或任务说明】${project.materials.sourceNotes || '未录入'}
-${chapter.id === '1' ? `【参考文献与当前编号】\n${JSON.stringify(references.map(reference => ({ citationNumber: reference.citationNumber, citationToken: reference.citationToken, authors: reference.authors, title: reference.title, fullPublication: formattedReference(reference) })), null, 2)}` : ''}
+${chapter.id === '1' ? `【参考文献规则】${referenceWritingPolicy(chapter.id)}\n【参考文献与当前编号】\n${JSON.stringify(references.map(reference => ({ citationNumber: reference.citationNumber, citationToken: reference.citationToken, authors: reference.authors, title: reference.title, fullPublication: formattedReference(reference) })), null, 2)}` : `【参考文献规则】${referenceWritingPolicy(chapter.id)}`}
 【其他章节内容账本】
 ${previousChapterContext('7')}
 【需要修订的完整原文】
 ${chapter.content}
 
-请返回修订后的完整本章正文，并直接替换旧稿，不要只追加补充说明。保留正确事实和必要图表占位，删除重复段落、错误引用、目录外标题、前后矛盾及否定已完成功能的表述。只使用目录中已有的二三级标题，同类内容用段落、分点或表格归纳。第一章引用保持每篇一次并按正文首次出现顺序连续；如需重排，使用对应 citationToken。第五章必须保留带单位的量化测试数据表。第六章的不足只能写有边界的性能、环境、样本或扩展限制，不得写核心功能未完成。只输出完整本章。`;
+请返回修订后的完整本章正文，并直接替换旧稿，不要只追加补充说明。保留正确事实和必要图表占位，删除重复段落、错误引用、目录外标题、前后矛盾及否定已完成功能的表述。只使用目录中已有的二三级标题，同类内容用段落、分点或表格归纳。严格执行上面的参考文献规则：有文献时只使用用户提供条目并各引用一次，无文献时删除所有引用编号且不得编造文献。第五章必须保留带单位的量化测试数据表。第六章的不足只能写有边界的性能、环境、样本或扩展限制，不得写核心功能未完成。只输出完整本章。`;
 }
 
 async function requestChapterRevision(chapter, issues, signal) {
@@ -2566,6 +2578,14 @@ function auditChapterLocal(chapter) {
   const chars = countBodyChars(text);
   if (chars < Math.round(chapter.target * 0.72)) issues.push({ severity: 'blocking', message: `本章有效字数 ${chars}，明显低于约 ${chapter.target} 字的目标` });
   if (chapter.id !== '1' && /\[\d+\]/.test(text)) issues.push({ severity: 'blocking', message: '参考文献引用只能出现在第一章' });
+  if (chapter.id === '1' && typeof Rules.validateReferences === 'function') {
+    try {
+      const referenceResult = Rules.validateReferences({ references: referencesForPrompt(), chapters: { 1: text }, requireAllSelected: true });
+      referenceResult.errors
+        .filter(item => item.code !== 'reference_publication_incomplete')
+        .forEach(item => issues.push({ severity: 'blocking', message: item.message || String(item) }));
+    } catch (error) { console.warn(error); }
+  }
   if (chapter.id === '4') {
     if (/```\s*(?:c|cpp|c\+\+|ino|java)?\b/i.test(text)) issues.push({ severity: 'blocking', message: '软件章节出现了程序代码，请改为业务文字和流程图说明' });
     if (/\b[A-Za-z_]\w{2,}\s*\(/.test(text)) issues.push({ severity: 'confirm', message: '检测到疑似函数名，请确认是否应改为中文业务描述' });
@@ -2918,7 +2938,7 @@ function renderQuality(panel) {
   const locked = Object.values(project.paper.chapters || {}).filter(chapter => chapter.status === 'locked').length;
   panel.innerHTML = `
     <div class="panel-heading"><div><span class="step-kicker">第 5 步</span><h2>检查通过后才算最终稿</h2><p>检查事实一致性、功能闭环、引用、重复内容、章节状态和正文有效字数。</p></div><span class="status-pill ${result?.blocking?.length ? 'is-danger' : result ? 'is-success' : ''}">${result ? (result.blocking.length ? '论文草稿' : '可以导出最终稿') : '等待检查'}</span></div>
-    <div class="quality-overview"><div><span>正文有效字数</span><strong>${bodyChars.toLocaleString('zh-CN')}</strong><small>最低 18,000</small></div><div><span>已锁定章节</span><strong>${locked} / 6</strong><small>需全部确认</small></div><div><span>参考文献</span><strong>${referencesForPrompt().length}</strong><small>只在第一章各引用一次</small></div></div>
+    <div class="quality-overview"><div><span>正文有效字数</span><strong>${bodyChars.toLocaleString('zh-CN')}</strong><small>最低 18,000</small></div><div><span>已锁定章节</span><strong>${locked} / 6</strong><small>需全部确认</small></div><div><span>参考文献</span><strong>${referencesForPrompt().length || '未提供'}</strong><small>${referencesForPrompt().length ? '只在第一章各引用一次' : '默认无文献模式'}</small></div></div>
     ${result ? renderQualityGroups(result) : '<div class="empty-state"><span>✓</span><h3>还没有运行全文检查</h3><p>系统不会只给一个模糊分数，而会告诉你具体需要处理什么。</p></div>'}
     <div class="extras-card"><div><h3>摘要和导出</h3><p>摘要在正文完成后生成，确保研究目的、方法、成果与全文一致。</p></div><button class="btn btn-secondary" id="ai-generate-abstracts" type="button" data-action="generate-abstracts">${project.paper.abstractCn ? 'AI 重新生成摘要' : 'AI 生成中英文摘要'}</button></div>
     ${project.paper.abstractCn ? `<details class="abstract-preview"><summary>查看已生成摘要</summary><h4>中文摘要</h4><p>${escapeHtml(project.paper.abstractCn)}</p><h4>关键词</h4><p>${escapeHtml(project.paper.keywords)}</p><h4>English Abstract</h4><p>${escapeHtml(project.paper.abstractEn)}</p></details>` : ''}
@@ -3512,6 +3532,17 @@ async function exportPaper(finalVersion) {
     toast('六个章节尚未全部生成，暂时不能导出论文文档', 'error');
     return false;
   }
+  const references = referencesForPrompt();
+  let exportReferences = references;
+  if (typeof Rules.validateReferences === 'function') {
+    const referenceAudit = Rules.validateReferences({ references, chapters: project.paper.chapters, requireAllSelected: true });
+    const boundaryErrors = referenceAudit.errors.filter(item => item.code !== 'reference_publication_incomplete');
+    if (boundaryErrors.length) {
+      toast(`参考文献检查未通过：${boundaryErrors[0].message || '请先修正引用'}`, 'error');
+      return false;
+    }
+    exportReferences = referenceAudit.orderedReferences;
+  }
   const suffix = finalVersion ? '最终稿' : '草稿';
   showBusy('正在生成标准 DOCX', '正在应用 A4 页面、宋体正文、黑体标题、1.5 倍行距、目录和页码');
   updateBusyProgress(96, '正在排版本科论文文档', '生成的是可在 Word 或 WPS 中继续编辑的真实 DOCX 文件');
@@ -3524,7 +3555,7 @@ async function exportPaper(finalVersion) {
       keywords: project.paper.keywords,
       acknowledgment: project.paper.acknowledgment,
       chapters: chapters.map(chapter => ({ id: chapter.id, title: chapter.title, content: normalizeRepeatedFigureIntroductions(chapter.content) })),
-      references: referencesForPrompt(),
+      references: exportReferences,
     });
     if (blob.size < 1000) throw new Error('DOCX 文件内容异常，请重新下载');
     downloadBlob(blob, `${safeFilename(project.title)}-${suffix}.docx`);
