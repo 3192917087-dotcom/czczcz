@@ -1,9 +1,9 @@
-import * as Rules from './rules.js?v=20260817-1';
+import * as Rules from './rules.js?v=20260822-1';
 
 const PAGE_CONFIG = globalThis.MCU_PAGE_CONFIG || {};
 const DEEPSEEK_API_URL = String(PAGE_CONFIG.apiUrl || 'https://api.deepseek.com/chat/completions');
 const DEEPSEEK_API_KEY = String(PAGE_CONFIG.apiKey || '').trim();
-const DEEPSEEK_CHAT_MODEL = String(PAGE_CONFIG.chatModel || 'deepseek-chat');
+const DEEPSEEK_CHAT_MODEL = String(PAGE_CONFIG.chatModel || 'deepseek-v4-pro');
 const DEEPSEEK_REASONING_MODEL = String(PAGE_CONFIG.reasoningModel || DEEPSEEK_CHAT_MODEL);
 
 const STORAGE_KEY = 'mcu-paper-studio.project.v1';
@@ -129,6 +129,9 @@ function emptyProject() {
       abstractEn: '',
       keywords: '',
       acknowledgment: '',
+      referenceOrder: [],
+      semanticIssues: [],
+      semanticCheckedAt: '',
       quality: null,
       status: 'planning',
       generation: {
@@ -177,6 +180,8 @@ function normalizeProject(value) {
     },
   };
   normalized.paper.stage = Math.max(1, Math.min(4, Number(normalized.paper.stage) || 1));
+  normalized.paper.referenceOrder = Array.isArray(normalized.paper.referenceOrder) ? normalized.paper.referenceOrder.filter(Boolean) : [];
+  normalized.paper.semanticIssues = Array.isArray(normalized.paper.semanticIssues) ? normalized.paper.semanticIssues : [];
   if (normalized.paper.generation.status === 'running') {
     normalized.paper.generation.status = 'paused';
     normalized.paper.generation.message = '上次生成被中断，可从未完成章节继续';
@@ -1297,7 +1302,7 @@ async function reviewSchemeWithAi(candidate, firstValidation, signal) {
   const raw = await callAi([
     { role: 'system', content: reviewerPrompt },
     { role: 'user', content: JSON.stringify(reviewPayload, null, 2) },
-  ], { temperature: 0.1, maxTokens: 8192, model: 'deepseek-reasoner', signal });
+  ], { temperature: 0.1, maxTokens: 8192, model: 'thinking', signal });
   const envelope = normalizeKnownValues(parseJsonResponse(raw));
   const reviewedSource = envelope.scheme || envelope.correctedScheme || envelope;
   const parsed = typeof Rules.parseSchemeResult === 'function'
@@ -1506,9 +1511,9 @@ function renderPaperMaterials(panel) {
       <label class="field field-wide"><span>已有方案、任务书或补充设计说明</span><textarea id="paper-source-notes" rows="10" placeholder="可直接粘贴你自己设计的完整方案、任务书要求或其他说明；AI写论文时会把这里的内容作为重要依据。">${escapeHtml(materials.sourceNotes)}</textarea></label>
       <label class="field field-wide"><span>原理图连接关系或硬件说明</span><textarea id="paper-connections" rows="8" placeholder="例如：DHT11 数据端接主控 PA1；OLED 使用 I²C 通信……">${escapeHtml(materials.connectionText)}</textarea></label>
       <label class="field field-wide"><span>单片机源程序或程序逻辑</span><textarea id="paper-code" rows="10" placeholder="可以粘贴源程序。正文只会提取业务逻辑，不会插入代码或使用函数名介绍。">${escapeHtml(materials.codeText)}</textarea><label class="file-button">选择 C、H、TXT 文件<input id="paper-code-files" type="file" accept=".c,.h,.txt,.ino,.cpp" multiple hidden></label></label>
-      <label class="field field-wide"><span>参考文献</span><textarea id="paper-references" rows="8" placeholder="一行一篇：作者｜题目｜摘要（摘要没有可以留空）">${escapeHtml(materials.referencesText)}</textarea><small>仅用于第一章，每篇只引用一次，系统不会联网补文献。</small></label>
+      <label class="field field-wide"><span>参考文献</span><textarea id="paper-references" rows="8" placeholder="优先粘贴完整 GB/T 7714 条目；或：作者｜题目｜J｜期刊名｜年份｜卷(期)｜页码｜摘要｜国内/国外">${escapeHtml(materials.referencesText)}</textarea><small>期刊必须含期刊名、年份、卷（期）和页码；学位论文必须含授予单位和年份。系统不会编造缺失出版信息。</small></label>
       <label class="field field-wide"><span>学校目录或往届论文目录</span><textarea id="paper-school-outline" rows="8" placeholder="没有可以留空，系统会按项目自动规划">${escapeHtml(materials.schoolOutline)}</textarea></label>
-      <label class="field"><span>测试、调试和操作记录</span><textarea id="paper-test-info" rows="7" placeholder="填写使用的工具、软件、操作方法和已有测试数据">${escapeHtml(materials.testInfo)}</textarea></label>
+      <label class="field"><span>测试、调试和操作记录</span><textarea id="paper-test-info" rows="7" placeholder="填写使用的工具、软件、操作方法和已有测试数据；没有数据时系统会按器件能力生成保守的量化测试表">${escapeHtml(materials.testInfo)}</textarea></label>
       <label class="field"><span>实物照片和待插图说明</span><textarea id="paper-photo-notes" rows="7" placeholder="写明有哪些实物图、功能展示图；图片后续由你在 WPS 中插入">${escapeHtml(materials.photoNotes)}</textarea></label>
     </div>
     <div class="panel-actions"><button class="btn btn-secondary" type="button" data-action="go-home">返回首页</button><button class="btn btn-primary" type="button" data-action="save-paper-materials">保存资料并开始核对</button></div>`;
@@ -1574,6 +1579,7 @@ function factsSignature() {
     connections: project.materials.connectionText,
     code: project.materials.codeText,
     tests: project.materials.testInfo,
+    references: project.materials.referencesText,
   });
 }
 
@@ -1591,6 +1597,9 @@ function invalidateIfFactsChanged(previousSignature) {
   project.paper.abstractEn = '';
   project.paper.keywords = '';
   project.paper.acknowledgment = '';
+  project.paper.referenceOrder = [];
+  project.paper.semanticIssues = [];
+  project.paper.semanticCheckedAt = '';
   project.paper.generation = {
     status: Object.values(project.paper.chapters || {}).some(chapter => chapter?.content) ? 'paused' : 'idle',
     phase: 'idle', runId: '', inputRevision: '', currentChapterId: '', completedChapterIds: [], percent: 0,
@@ -1606,7 +1615,7 @@ function localFactIssues() {
   if (!paperFunctions().length) issues.push({ severity: 'blocking', title: '功能清单缺失', detail: '至少需要一项实际实现功能。' });
   if (!project.materials.connectionText) issues.push({ severity: 'confirm', title: '连接关系尚未提供', detail: '硬件章节只能采用保守描述，最终稿前建议补充。' });
   if (!project.materials.codeText) issues.push({ severity: 'confirm', title: '源程序尚未提供', detail: '软件章节只能按已确认功能描述通用业务流程。' });
-  if (!project.materials.testInfo) issues.push({ severity: 'confirm', title: '测试记录尚未提供', detail: '测试数据和操作过程需要在最终稿前确认。' });
+  if (!project.materials.testInfo) issues.push({ severity: 'writing', title: '测试记录尚未提供', detail: '系统会依据器件能力和功能逻辑生成保守、可编辑的量化测试数据表，请在定稿前按实物情况调整。' });
   return issues.map(normalizeIssue);
 }
 
@@ -1678,7 +1687,7 @@ async function runFactAudit() {
     const raw = await callAi([
       { role: 'system', content: prompt },
       { role: 'user', content: JSON.stringify(context, null, 2) },
-    ], { temperature: 0.15, model: 'deepseek-reasoner', signal: requestController.signal });
+    ], { temperature: 0.15, model: 'thinking', signal: requestController.signal });
     const result = parseJsonResponse(raw);
     const aiIssues = Array.isArray(result.issues) ? result.issues.map(normalizeIssue) : [];
     project.audit = {
@@ -1750,12 +1759,7 @@ function confirmFacts() {
 }
 
 function fallbackOutline() {
-  const devices = paperDevices().slice(0, 8);
-  const functions = paperFunctions().slice(0, 8);
-  const deviceSections = devices.map((item, index) => `3.${index + 4}.${1} ${item.replace(/[（(].*$/, '')}电路设计`).join('\n');
-  const softwareSections = functions.slice(0, 6).map((item, index) => `4.${index + 4}.${1} ${item.slice(0, 20)}程序逻辑设计`).join('\n');
-  const testSections = functions.map((item, index) => `5.4.${index + 1} ${item.slice(0, 20)}功能测试`).join('\n');
-  return `第1章 绪论\n1.1 研究背景及意义\n1.2 国内外研究现状\n1.2.1 国内研究现状\n1.2.2 国外研究现状\n1.2.3 国内外研究现状分析\n1.3 本文主要研究内容\n1.4 论文组织结构\n\n第2章 系统总体方案设计\n2.1 系统需求分析\n2.2 系统总体架构\n2.3 系统功能设计\n2.4 主要器件选型\n2.5 系统总体方案确定\n\n第3章 系统硬件设计\n3.1 硬件系统总体设计\n3.2 主控最小系统设计\n3.3 电源电路设计\n${deviceSections}\n\n第4章 系统软件设计\n4.1 软件开发环境\n4.2 软件总体架构\n4.3 系统主程序设计\n${softwareSections}\n\n第5章 系统调试与功能测试\n5.1 系统开发与调试环境\n5.2 硬件调试\n5.3 软件调试\n${testSections}\n5.5 测试结果分析\n\n第6章 总结与展望`;
+  return `第1章 绪论\n1.1 研究背景及意义\n1.2 国内外研究现状\n1.2.1 国内研究现状\n1.2.2 国外研究现状\n1.2.3 国内外研究现状分析\n1.3 本文主要研究内容\n1.4 论文组织结构\n\n第2章 系统总体方案设计\n2.1 系统需求分析\n2.2 系统总体架构\n2.3 系统功能设计\n2.4 主要器件选型\n2.4.1 主控制器选型\n2.4.2 传感与执行器件选型\n2.4.3 显示、通信与辅助器件选型\n2.5 系统总体方案确定\n\n第3章 系统硬件设计\n3.1 硬件系统总体设计\n3.2 主控最小系统设计\n3.3 电源电路设计\n3.4 传感器电路设计\n3.5 执行器驱动电路设计\n3.6 显示与通信电路设计\n\n第4章 系统软件设计\n4.1 软件开发环境\n4.2 软件总体架构\n4.3 系统主程序设计\n4.4 传感器驱动程序设计\n4.5 显示与通信程序设计\n4.6 控制及报警逻辑设计\n4.7 软件异常处理\n\n第5章 系统调试与功能测试\n5.1 系统开发与调试环境\n5.2 硬件调试\n5.3 软件调试\n5.4 系统功能测试\n5.4.1 采集、显示与通信功能测试\n5.4.2 控制、报警与联动功能测试\n5.5 测试结果分析\n\n第6章 总结与展望`;
 }
 
 function buildDefaultOutline() {
@@ -1786,7 +1790,7 @@ function buildDefaultOutline() {
 function renderOutline(panel) {
   if (!project.outline.text) project.outline.text = project.materials.schoolOutline || buildDefaultOutline();
   panel.innerHTML = `
-    <div class="panel-heading"><div><span class="step-kicker">第 3 步</span><h2>确认目录后，一键生成整篇论文</h2><p>学校目录优先；没有目录时，系统会根据器件和功能自动生成三级标题。</p></div><span class="status-pill">正文目标 ${Number(project.paper.targetChars || 20000).toLocaleString('zh-CN')} 字以上</span></div>
+    <div class="panel-heading"><div><span class="step-kicker">第 3 步</span><h2>确认目录后，一键生成整篇论文</h2><p>学校目录优先；没有目录时，系统会按同类器件和功能归纳标题，避免拆分过细。</p></div><span class="status-pill">正文目标 ${Number(project.paper.targetChars || 20000).toLocaleString('zh-CN')} 字以上</span></div>
     <div class="outline-layout">
       <label class="field field-wide"><span>论文目录 <small>每行一个标题，可直接修改</small></span><textarea id="outline-editor" rows="28">${escapeHtml(project.outline.text)}</textarea></label>
       <aside class="chapter-contract"><h3>内容分工</h3><ul><li>第1章：背景和研究现状</li><li>第2章：功能、架构和器件选型</li><li>第3章：电气连接和电路原理</li><li>第4章：程序业务逻辑，不插代码</li><li>第5章：调试、操作和功能验证</li><li>第6章：成果、不足和展望</li></ul><p>同一内容只在负责章节详细展开，避免全文重复。</p></aside>
@@ -1810,8 +1814,10 @@ function confirmOutline() {
   const text = $('outline-editor')?.value.trim() || '';
   const target = Math.max(18000, Number($('paper-target')?.value) || 20000);
   const found = [...text.matchAll(/^#{0,6}\s*第\s*([1-9]\d*)\s*章\s+(.+)$/gm)];
-  if (found.length < 6) {
-    toast('目录至少需要包含第1章至第6章', 'error');
+  const chapterNumbers = found.map(match => Number(match[1])).filter(number => number >= 1 && number <= 6);
+  const validChapterSequence = chapterNumbers.length === 6 && chapterNumbers.every((number, index) => number === index + 1);
+  if (!validChapterSequence) {
+    toast('目录必须按顺序且各只出现一次：第1章至第6章', 'error');
     return;
   }
   const changed = project.outline.text !== text;
@@ -1828,6 +1834,9 @@ function confirmOutline() {
     project.paper.abstractEn = '';
     project.paper.keywords = '';
     project.paper.acknowledgment = '';
+    project.paper.referenceOrder = [];
+    project.paper.semanticIssues = [];
+    project.paper.semanticCheckedAt = '';
     project.paper.generation = {
       status: Object.values(project.paper.chapters || {}).some(chapter => chapter?.content) ? 'paused' : 'idle',
       phase: 'idle', runId: '', inputRevision: '', currentChapterId: '', completedChapterIds: [], percent: 0,
@@ -1999,8 +2008,8 @@ function chapterDuty(id) {
     2: '只详细写需求、系统方案、功能、架构和器件选型，不重复电路连接和程序逻辑。每个核心器件预留器件图片位置。',
     3: '只详细写电气连接、电路工作原理和供电关系。每个独立模块预留电路图；连接复杂时给出关系表。',
     4: '只写开发环境、程序总体流程、器件驱动和功能业务逻辑。不插入代码，不使用函数名或变量名介绍程序。',
-    5: '介绍调试工具、环境、操作方法和每项功能的验证过程。每项核心功能预留一张展示图。',
-    6: '结合题目背景概括实际完成内容、存在不足和一一对应的展望，不引入新功能。',
+    5: '介绍调试工具、环境、操作方法和分组功能验证过程，必须包含带单位的量化测试数据表。没有实测记录时按器件能力保守推定可编辑数据。每项核心功能预留一张展示图。',
+    6: '结合题目背景概括实际完成内容、限定条件和一一对应的优化方向，不引入新功能，不得把已确认功能写成未完成或未实现。',
   }[id] || '';
 }
 
@@ -2025,20 +2034,61 @@ function revealChapterEditor() {
   });
 }
 
-function referencesForPrompt() {
+function parsedReferences() {
   const parser = Rules.parseReferences || Rules.parseReferenceRecords;
   if (typeof parser === 'function') {
     try {
-      return parser(project.materials.referencesText || '').map((reference, index) => ({
-        ...reference,
-        citationNumber: index + 1,
-      }));
+      return parser(project.materials.referencesText || '');
     } catch (error) { console.warn(error); }
   }
   return lines(project.materials.referencesText).map((line, index) => {
     const [authors = '', title = '', abstract = ''] = line.split(/[|｜]/).map(item => item.trim());
-    return { number: index + 1, authors, title: title || line, abstract };
+    return { id: `ref-${index + 1}`, authors, title: title || line, abstract, raw: line };
   });
+}
+
+function referencesForPrompt() {
+  const references = parsedReferences();
+  const byId = new Map(references.map(reference => [reference.id, reference]));
+  const ordered = (project.paper.referenceOrder || []).map(id => byId.get(id)).filter(Boolean);
+  references.forEach(reference => {
+    if (!ordered.some(item => item.id === reference.id)) ordered.push(reference);
+  });
+  return ordered.map((reference, index) => ({
+    ...reference,
+    formatted: formattedReference(reference),
+    citationNumber: index + 1,
+    citationToken: `{{cite:${reference.id}}}`,
+  }));
+}
+
+function normalizeCitationOrder(value) {
+  const source = String(value || '');
+  const base = parsedReferences();
+  if (!base.length) {
+    project.paper.referenceOrder = [];
+    return source.replace(/\{\{cite:[^}]+\}\}/g, '');
+  }
+  const baseById = new Map(base.map(reference => [reference.id, reference]));
+  const previousOrder = (project.paper.referenceOrder || []).map(id => baseById.get(id)).filter(Boolean);
+  const order = [];
+  const rewritten = source.replace(/\{\{cite:([^}]+)\}\}|\[(\d+)\]/g, (full, tokenId, numeric) => {
+    const reference = tokenId
+      ? baseById.get(String(tokenId).trim())
+      : (previousOrder[Number(numeric) - 1] || base[Number(numeric) - 1]);
+    if (!reference) return full;
+    if (order.includes(reference.id)) return '';
+    order.push(reference.id);
+    return `[${order.length}]`;
+  });
+  project.paper.referenceOrder = order;
+  return rewritten.replace(/[ \t]+([，。；;,.])/g, '$1').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function formattedReference(reference) {
+  if (typeof Rules.formatReferenceRecord === 'function') return Rules.formatReferenceRecord(reference);
+  const authors = Array.isArray(reference?.authors) ? reference.authors.join('，') : String(reference?.authors || '');
+  return [authors, reference?.title].filter(Boolean).join('. ');
 }
 
 function normalizedFigureKey(major, minor) {
@@ -2172,7 +2222,7 @@ function artifactPlanForChapter(id) {
     return `本章图示：必须包含系统主程序流程图，并为实际需要展开的核心功能逻辑提供详细文字流程图；通信对时序敏感时才规划时序图，多工作模式时才规划状态图，必要计算才使用公式。功能清单：${functions.join('、')}。流程图说明需写出开始、初始化、采集或输入、条件判断的各分支、执行动作、异常处理和返回路径，可直接供用户照着绘制；不得固定套用与本项目无关的五张图。`;
   }
   if (id === '5') {
-    return `本章展示：先介绍实际使用的调试工具、软件与操作环境，再逐项介绍功能的操作方法、观察现象和结果分析。每项核心功能说明后必须预留一张功能展示图，并给出拍摄对象、操作状态、画面中应出现的信息和判定依据。功能清单：${functions.join('、')}。没有用户确认的量化数据时，不得生成精度、误差、响应时间、成功率或稳定运行时长。`;
+    return `本章展示：先介绍实际使用的调试工具、软件与操作环境，再按同类功能归纳测试方法、操作步骤、量化数据和结果分析。功能清单：${functions.join('、')}。至少生成一张 Markdown 量化测试表，表中包含测试项目、条件或次数、测量/统计数据（带单位）、判定标准和结果；用户没有提供数据时，依据已确认器件能力和常见实验条件推定保守、可编辑且前后一致的数据，禁止100%成功率、零误差等绝对化结果。每项核心功能说明后必须预留一张功能展示图，并给出拍摄对象、操作状态、画面中应出现的信息和判定依据。`;
   }
   return '图表只按本章真实需要规划；任何图位必须先在正文引用，随后给正式占位和详细非正文制作说明。每张图只允许一次带明确图号的首次引出、一个图位和一段制作说明，后文不得重复“如图所示”或重复插入同一张图。';
 }
@@ -2180,7 +2230,15 @@ function artifactPlanForChapter(id) {
 function previousChapterContext(currentId) {
   return Object.values(project.paper.chapters)
     .filter(chapter => Number(chapter.id) < Number(currentId) && chapter.content)
-    .map(chapter => `第${chapter.id}章已写内容摘要（仅用于避免重复）：\n${chapter.content.slice(0, 700)}`)
+    .map(chapter => {
+      const headings = [...String(chapter.content).matchAll(/^#{2,3}\s+(.+)$/gm)].map(match => match[1]).slice(0, 12);
+      const paragraphOpenings = String(chapter.content).split(/\n{2,}/)
+        .map(item => item.replace(/^#{1,6}\s*/, '').replace(/\s+/g, ' ').trim())
+        .filter(item => item.length >= 60 && !item.startsWith('【'))
+        .slice(0, 12)
+        .map(item => item.slice(0, 90));
+      return `第${chapter.id}章内容账本（这些主题只可简短衔接，不得再次完整展开）：\n标题：${headings.join('；') || '无'}\n段落要点：${paragraphOpenings.join('；') || '无'}`;
+    })
     .join('\n\n');
 }
 
@@ -2188,17 +2246,24 @@ function chapterPrompt(chapter, mode = 'generate') {
   const references = referencesForPrompt();
   const context = {
     title: project.title,
-    level: project.level,
     devices: paperDevices(),
     functions: paperFunctions(),
     confirmedFunctionClosures: paperClosureSummary(),
     scheme: paperSchemeText(),
-    designSchemeOrTaskNotes: project.materials.sourceNotes || '未提供',
-    connections: project.materials.connectionText || '未提供，未知连接不得编造具体引脚',
-    codeLogic: (project.materials.codeText || '未提供，只能描述通用业务流程').slice(0, 35000),
-    tests: project.materials.testInfo || '未提供，量化测试结论必须作为待确认内容',
+    designSchemeOrTaskNotes: project.materials.sourceNotes || null,
+    connections: project.materials.connectionText || null,
+    codeLogic: project.materials.codeText ? project.materials.codeText.slice(0, 35000) : null,
+    tests: project.materials.testInfo || null,
+    missingMaterialPolicy: '网站未录入某类材料不等于项目未完成；不得据此否定任何已确认功能。未知引脚不得编造。第五章无实测数据时按器件能力生成保守量化表。',
     photoNotes: project.materials.photoNotes || '用户后续手动插图',
-    references: chapter.id === '1' ? references : [],
+    references: chapter.id === '1' ? references.map(reference => ({
+      id: reference.id,
+      authors: reference.authors,
+      title: reference.title,
+      abstract: reference.abstract,
+      citationToken: reference.citationToken,
+      fullPublication: formattedReference(reference),
+    })) : [],
     confirmedAuditResolutions: project.audit.issues.filter(issue => issue.resolved).map(issue => `${issue.title}：${issue.resolution}`),
   };
   const previous = previousChapterContext(chapter.id);
@@ -2206,13 +2271,72 @@ function chapterPrompt(chapter, mode = 'generate') {
   const extra = mode === 'expand'
     ? `\n【当前正文】\n${chapter.content}\n\n请只补充当前章节缺少的设计依据、原理、逻辑或分析，合并成完整章节。不得简单同义改写凑字数，不得删掉已有可靠内容。`
     : '';
-  return `【论文题目】${project.title}\n【当前任务】撰写第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章内容职责】${chapterDuty(chapter.id)}\n【目标有效字数】约${chapter.target}字\n【本章图表与说明计划】${artifactPlan}\n\n【已确认项目事实】\n${JSON.stringify(context, null, 2)}\n\n${previous}\n${extra}\n\n写作要求：全文围绕题目，符合本科生工程论文水平，专业但不故作高深；适当使用行业背景话术，但必须落回本项目。当前章标题由系统统一生成，不要重复输出；论文二级标题严格使用“## 2.1 标题”，三级标题严格使用“### 2.1.1 标题”，不得使用单个“#”或“####”及更深层级。每张图只允许一次“如图X-X所示”的首次引出、一个正式图位和一段非正文制作说明；后文可以写“由图X-X可知”或“结合图X-X分析”，但不得再次使用“如图所示”或重复插入同一图位。禁止没有明确图号的“如图所示”。图表、流程图或拍摄说明用“【非正文·……｜定稿前删除】”与正文区分。各章节严格履行唯一职责，不能把器件选型、电路、程序和测试内容互相重复。只输出本章正文，不输出写作解释。`;
+  return `【论文题目】${project.title}\n【当前任务】撰写第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章内容职责】${chapterDuty(chapter.id)}\n【目标有效字数】约${chapter.target}字\n【本章图表与说明计划】${artifactPlan}\n\n【已确认项目事实】\n${JSON.stringify(context, null, 2)}\n\n${previous}\n${extra}\n\n写作要求：全文围绕题目，符合本科生工程论文水平，专业但不故作高深；适当使用行业背景话术，但必须落回本项目。当前章标题由系统统一生成，不要重复输出；只允许输出本章目录中已有的二、三级标题。论文二级标题严格使用“## 2.1 标题”，三级标题严格使用“### 2.1.1 标题”，不得使用单个“#”或“####”及更深层级。同类器件、电路、程序和测试用段落、分点或表格归纳，不得为每个条目另设三级标题，每个二级标题通常不超过3个三级标题。每张图只允许一次“如图X-X所示”的首次引出、一个正式图位和一段非正文制作说明；后文可以写“由图X-X可知”或“结合图X-X分析”，但不得再次使用“如图所示”或重复插入同一图位。禁止没有明确图号的“如图所示”。图表、流程图或拍摄说明用“【非正文·……｜定稿前删除】”与正文区分。各章节严格履行唯一职责，不能把器件选型、电路、程序和测试内容互相重复。第一章引用必须使用文献记录给出的 citationToken，禁止自行输出数字编号；每篇只使用一次。第六章不得将已确认功能写成未完成、未实现或仅停留在设想。只输出本章正文，不输出写作解释。`;
 }
 
 function continuationPrompt(chapter, issues = []) {
   const tail = String(chapter.content || '').slice(-1800);
   const figureLedger = figureLedgerForPrompt(chapter.content);
-  return `【论文题目】${project.title}\n【当前章节】第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章职责】${chapterDuty(chapter.id)}\n【本章目标】约${chapter.target}字\n【当前有效字数】${countBodyChars(chapter.content)}字\n【本章已使用图账本】\n${figureLedger}\n【需要补充或修正的问题】\n${issues.length ? issues.map(item => `- ${item.message || item}`).join('\n') : '- 当前内容尚未达到本章目标，请继续补足目录中尚未充分展开的内容'}\n【已有正文末尾】\n${tail}\n\n请从已有正文之后自然续写，只输出需要追加的新段落，不要重复已有标题和段落，不要重新输出整章。账本中已有的图号不得再次写“如图X-X所示”，不得重复对应图位或制作说明；需要继续分析时改写为“由图X-X可知”“结合图X-X分析”或“该图中”。禁止没有明确图号的“如图所示”。继续遵守：不编造未知引脚和量化数据；不插入代码；二级标题只用“## 2.1 标题”，三级标题只用“### 2.1.1 标题”，禁止“####”；图表说明用“【非正文·……｜定稿前删除】”区分。`;
+  const headings = [...String(chapter.content || '').matchAll(/^#{2,3}\s+(.+)$/gm)].map(match => match[1]);
+  const paragraphLedger = String(chapter.content || '').split(/\n{2,}/)
+    .map(item => item.replace(/^#{1,6}\s*/, '').replace(/\s+/g, ' ').trim())
+    .filter(item => item.length >= 60 && !item.startsWith('【'))
+    .slice(0, 24)
+    .map(item => item.slice(0, 90));
+  return `【论文题目】${project.title}\n【当前章节】第${chapter.id}章《${chapter.title}》\n【本章目录】\n${chapter.outline}\n【本章职责】${chapterDuty(chapter.id)}\n【本章目标】约${chapter.target}字\n【当前有效字数】${countBodyChars(chapter.content)}字\n【本章已有标题】${headings.join('；') || '无'}\n【本章已覆盖段落要点】${paragraphLedger.join('；') || '无'}\n【本章已使用图账本】\n${figureLedger}\n【需要补充的问题】\n${issues.length ? issues.map(item => `- ${item.message || item}`).join('\n') : '- 当前内容尚未达到本章目标，请继续补足目录中尚未充分展开的内容'}\n【已有正文末尾】\n${tail}\n\n请从已有正文之后自然续写，只输出真正缺少的新段落，不要重复已有标题、段落、器件参数、工作原理或章节总结，不要重新输出整章。账本中已有的图号不得再次写“如图X-X所示”，不得重复对应图位或制作说明；需要继续分析时改写为“由图X-X可知”“结合图X-X分析”或“该图中”。禁止没有明确图号的“如图所示”。继续遵守：不编造未知引脚；第五章无实测数据时生成保守量化数据表；不插入代码；只使用目录已有标题，同类内容不得另设三级标题；图表说明用“【非正文·……｜定稿前删除】”区分。`;
+}
+
+function paragraphFingerprint(value) {
+  return String(value || '')
+    .replace(/【非正文·[\s\S]*?【非正文结束】/g, '')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\[\d+\]|\{\{cite:[^}]+\}\}/g, '')
+    .replace(/[\s\p{P}\p{S}\d]/gu, '')
+    .toLowerCase();
+}
+
+function trigramSimilarity(leftValue, rightValue) {
+  const left = paragraphFingerprint(leftValue);
+  const right = paragraphFingerprint(rightValue);
+  if (left.length < 80 || right.length < 80) return 0;
+  if (left === right) return 1;
+  const lengthRatio = Math.min(left.length, right.length) / Math.max(left.length, right.length);
+  if (lengthRatio < 0.72) return 0;
+  const grams = value => {
+    const set = new Set();
+    for (let index = 0; index <= value.length - 3; index += 1) set.add(value.slice(index, index + 3));
+    return set;
+  };
+  const leftSet = grams(left);
+  const rightSet = grams(right);
+  let overlap = 0;
+  leftSet.forEach(item => { if (rightSet.has(item)) overlap += 1; });
+  return overlap / Math.max(1, leftSet.size + rightSet.size - overlap);
+}
+
+function proseBlocks(value) {
+  return String(value || '').replace(/\r\n?/g, '\n').split(/\n{2,}/).map(block => block.trim()).filter(Boolean);
+}
+
+function isDeduplicableBlock(block) {
+  const value = String(block || '').trim();
+  return paragraphFingerprint(value).length >= 80
+    && !/^#{1,6}\s/.test(value)
+    && !/^\|/.test(value)
+    && !value.startsWith('【');
+}
+
+function dedupeGeneratedContent(value, chapterId) {
+  const known = [];
+  Object.values(project.paper.chapters || {})
+    .filter(chapter => String(chapter.id) !== String(chapterId) && chapter.content)
+    .forEach(chapter => proseBlocks(chapter.content).filter(isDeduplicableBlock).forEach(block => known.push(block)));
+  const kept = [];
+  for (const block of proseBlocks(value)) {
+    if (isDeduplicableBlock(block) && [...known, ...kept.filter(isDeduplicableBlock)].some(other => trigramSimilarity(other, block) >= 0.92)) continue;
+    kept.push(block);
+  }
+  return kept.join('\n\n').trim();
 }
 
 function appendChapterContent(existing, addition) {
@@ -2220,9 +2344,15 @@ function appendChapterContent(existing, addition) {
   const right = stripThink(addition).trim();
   if (!left) return right;
   if (!right) return left;
-  const probe = right.slice(0, 120).replace(/\s+/g, '');
-  if (probe && left.replace(/\s+/g, '').includes(probe)) return left;
-  return `${left}\n\n${right}`;
+  const existingBlocks = proseBlocks(left);
+  const existingHeadings = new Set([...left.matchAll(/^#{2,3}\s+(.+)$/gm)].map(match => match[1].replace(/\s+/g, '').toLowerCase()));
+  const additions = proseBlocks(right).filter(block => {
+    const heading = block.match(/^#{2,3}\s+(.+)$/)?.[1];
+    if (heading && existingHeadings.has(heading.replace(/\s+/g, '').toLowerCase())) return false;
+    if (!isDeduplicableBlock(block)) return true;
+    return !existingBlocks.some(existingBlock => isDeduplicableBlock(existingBlock) && trigramSimilarity(existingBlock, block) >= 0.9);
+  });
+  return additions.length ? `${left}\n\n${additions.join('\n\n')}` : left;
 }
 
 async function requestChapterContent(chapter, { mode = 'generate', signal } = {}) {
@@ -2238,9 +2368,48 @@ async function requestChapterContent(chapter, { mode = 'generate', signal } = {}
   }
 }
 
+function issuesRequireReplacement(issues = []) {
+  return issues.some(item => /重复|矛盾|冲突|参考文献|引用|标题|代码|函数名|未完成|未实现|无法运行|仅停留|自我否定|出版信息/.test(item.message || item.detail || String(item)));
+}
+
+function chapterRevisionPrompt(chapter, issues = []) {
+  const references = referencesForPrompt();
+  return `【论文题目】${project.title}
+【修订章节】第${chapter.id}章《${chapter.title}》
+【本章唯一允许的目录】
+${chapter.outline}
+【必须解决的问题】
+${issues.map(item => `- ${item.message || item.detail || item}`).join('\n') || '- 提升事实一致性和表达质量'}
+【已确认器件】${paperDevices().join('、')}
+【已确认功能】${paperFunctions().join('；')}
+【已确认连接和硬件说明】${project.materials.connectionText || '未录入；未知引脚不得猜测，但不能据此否定项目已完成'}
+【已有方案或任务说明】${project.materials.sourceNotes || '未录入'}
+${chapter.id === '1' ? `【参考文献与当前编号】\n${JSON.stringify(references.map(reference => ({ citationNumber: reference.citationNumber, citationToken: reference.citationToken, authors: reference.authors, title: reference.title, fullPublication: formattedReference(reference) })), null, 2)}` : ''}
+【其他章节内容账本】
+${previousChapterContext('7')}
+【需要修订的完整原文】
+${chapter.content}
+
+请返回修订后的完整本章正文，并直接替换旧稿，不要只追加补充说明。保留正确事实和必要图表占位，删除重复段落、错误引用、目录外标题、前后矛盾及否定已完成功能的表述。只使用目录中已有的二三级标题，同类内容用段落、分点或表格归纳。第一章引用保持每篇一次并按正文首次出现顺序连续；如需重排，使用对应 citationToken。第五章必须保留带单位的量化测试数据表。第六章的不足只能写有边界的性能、环境、样本或扩展限制，不得写核心功能未完成。只输出完整本章。`;
+}
+
+async function requestChapterRevision(chapter, issues, signal) {
+  const raw = await callAi([
+    { role: 'system', content: Rules.PAPER_BASE_SYSTEM_PROMPT || '你是严谨的单片机本科论文修订专家。' },
+    { role: 'user', content: chapterRevisionPrompt(chapter, issues) },
+  ], { model: 'thinking', maxTokens: 20000, signal });
+  const content = stripThink(raw).trim();
+  if (countBodyChars(content) < Math.max(500, Math.round(countBodyChars(chapter.content) * 0.65))) {
+    throw new Error(`第${chapter.id}章修订结果过短，已保留原稿`);
+  }
+  return content;
+}
+
 function persistGeneratedChapter(chapter, content, { append = false } = {}) {
   const next = append ? appendChapterContent(chapter.content, content) : String(content || '').trim();
-  const normalized = normalizeRepeatedFigureIntroductions(next);
+  let normalized = normalizeRepeatedFigureIntroductions(next);
+  if (String(chapter.id) === '1') normalized = normalizeCitationOrder(normalized);
+  normalized = dedupeGeneratedContent(normalized, chapter.id);
   if (countBodyChars(normalized) < 200) throw new Error(`第${chapter.id}章返回内容过短，请稍后继续生成`);
   chapter.content = normalized;
   chapter.status = 'draft';
@@ -2272,9 +2441,14 @@ async function generateChapterAutomatically(chapter, signal) {
     chapter.issues = auditChapterLocal(chapter);
     const blocking = chapter.issues.filter(issue => issue.severity === 'blocking');
     if (!blocking.length) break;
-    const supplemented = await requestChapterContent(chapter, { mode: 'continue', signal });
     const before = countBodyChars(chapter.content);
-    persistGeneratedChapter(chapter, supplemented.content, { append: true });
+    if (issuesRequireReplacement(blocking)) {
+      const revised = await requestChapterRevision(chapter, blocking, signal);
+      persistGeneratedChapter(chapter, revised, { append: false });
+    } else {
+      const supplemented = await requestChapterContent(chapter, { mode: 'continue', signal });
+      persistGeneratedChapter(chapter, supplemented.content, { append: true });
+    }
     if (countBodyChars(chapter.content) <= before) break;
   }
   chapter.issues = auditChapterLocal(chapter);
@@ -2308,14 +2482,7 @@ async function generateChapter(mode = 'generate') {
     ], { temperature: 0.38, maxTokens: 16384, signal: requestController.signal });
     const content = stripThink(raw);
     if (countBodyChars(content) < 500) throw new Error('生成内容过短，请重新生成');
-    chapter.content = content;
-    chapter.status = 'draft';
-    chapter.inputRevision = project.revision;
-    chapter.updatedAt = nowIso();
-    chapter.issues = auditChapterLocal(chapter);
-    project.paper.status = 'draft';
-    project.paper.quality = null;
-    saveProject({ immediate: true });
+    persistGeneratedChapter(chapter, content, { append: false });
     renderPaper();
     revealChapterEditor();
     toast(`第 ${chapter.id} 章草稿已生成，请检查后再锁定`, 'success');
@@ -2323,14 +2490,7 @@ async function generateChapter(mode = 'generate') {
     if (error.name !== 'AbortError' && error.partialContent) {
       const partial = stripThink(error.partialContent);
       if (countBodyChars(partial) >= 500 && (mode !== 'expand' || countBodyChars(partial) > countBodyChars(chapter.content))) {
-        chapter.content = partial;
-        chapter.status = 'draft';
-        chapter.inputRevision = project.revision;
-        chapter.updatedAt = nowIso();
-        chapter.issues = auditChapterLocal(chapter);
-        project.paper.status = 'draft';
-        project.paper.quality = null;
-        saveProject({ immediate: true });
+        persistGeneratedChapter(chapter, partial, { append: false });
         toast('本章达到单次输出上限，已保留生成内容；请点击“AI 补充本章”继续完成', 'info');
       } else {
         chapter.status = chapter.content ? 'draft' : 'planned';
@@ -2346,6 +2506,51 @@ async function generateChapter(mode = 'generate') {
     hideBusy();
     requestController = null;
   }
+}
+
+function headingStructureIssues(chapter) {
+  const content = String(chapter.content || '');
+  const issues = [];
+  const headings = [...content.matchAll(/^(#{2,6})\s+((\d+\.\d+(?:\.\d+)?)\s+[^\n]+)$/gm)].map(match => ({ hashes: match[1].length, number: match[3], text: match[2] }));
+  const allowed = new Set([...String(chapter.outline || '').matchAll(/(?:^|\n)\s*#{0,6}\s*(\d+\.\d+(?:\.\d+)?)\s+[^\n]+/g)].map(match => match[1]));
+  const seen = new Set();
+  headings.forEach(heading => {
+    if (seen.has(heading.number)) issues.push({ severity: 'blocking', message: `标题编号 ${heading.number} 在本章重复出现` });
+    seen.add(heading.number);
+    if (allowed.size && !allowed.has(heading.number)) issues.push({ severity: 'blocking', message: `出现目录外标题 ${heading.number}，只能使用已确认目录中的标题` });
+    const expectedLevel = heading.number.split('.').length;
+    if ((expectedLevel === 2 && heading.hashes !== 2) || (expectedLevel === 3 && heading.hashes !== 3) || heading.hashes > 3) {
+      issues.push({ severity: 'blocking', message: `标题 ${heading.number} 的层级标记错误：二级用##，三级用###，禁止####` });
+    }
+  });
+  const h3 = headings.filter(heading => heading.number.split('.').length === 3);
+  if (h3.length > 8) issues.push({ severity: 'blocking', message: `本章包含 ${h3.length} 个三级标题，拆分过细，应合并同类型器件、功能、电路或程序` });
+  const byParent = new Map();
+  h3.forEach(heading => {
+    const parent = heading.number.split('.').slice(0, 2).join('.');
+    byParent.set(parent, (byParent.get(parent) || 0) + 1);
+  });
+  byParent.forEach((count, parent) => {
+    if (count > 3) issues.push({ severity: 'blocking', message: `二级标题 ${parent} 下有 ${count} 个三级标题，请归纳为不超过3个逻辑主题` });
+  });
+  return issues;
+}
+
+function testChapterIssues(value) {
+  const text = String(value || '');
+  const issues = [];
+  const hasTable = /^\s*\|[^\n]+\|\s*\n\s*\|(?:\s*:?-{3,}:?\s*\|)+/m.test(text);
+  const quantities = text.match(/\d+(?:\.\d+)?\s*(?:%|℃|°C|ms|s|秒|分钟|min|h|小时|V|mV|A|mA|lx|ppm|cm|mm|m|次)(?![A-Za-z])/gi) || [];
+  if (!hasTable) issues.push({ severity: 'blocking', message: '第五章必须包含至少一张 Markdown 量化测试数据表' });
+  if (quantities.length < 3) issues.push({ severity: 'blocking', message: '第五章缺少足够的带单位量化数据，不能只写“功能正常”' });
+  if (/100\s*%|零误差|误差为\s*0(?:\.0+)?\b/.test(text)) issues.push({ severity: 'confirm', message: '测试结果包含100%或零误差等绝对化数值，请结合实际条件确认' });
+  return issues;
+}
+
+function completionClaimIssues(value) {
+  const text = String(value || '');
+  const pattern = /(?:尚未|仍未|未能|没有|并未|未予)(?:完全)?(?:实现|完成|验证|部署|运行)|(?:系统|功能|模块)[^。；\n]{0,12}(?:无法运行|没有实现|尚不完整|功能不完善)|仅停留在(?:设想|理论|概念)(?:阶段)?/g;
+  return pattern.test(text) ? [{ severity: 'blocking', message: '第六章出现了“未完成/未实现”等自我否定表述；不足应改为有边界的性能、环境、样本或扩展限制' }] : [];
 }
 
 function auditChapterLocal(chapter) {
@@ -2369,7 +2574,10 @@ function auditChapterLocal(chapter) {
   if (chapter.id === '5') {
     const missingFunctions = functions.filter(item => !text.includes(item.slice(0, Math.min(8, item.length))));
     if (missingFunctions.length) issues.push({ severity: 'confirm', message: `测试章节可能没有逐项回应 ${missingFunctions.length} 项功能` });
+    issues.push(...testChapterIssues(text));
   }
+  if (chapter.id === '6') issues.push(...completionClaimIssues(text));
+  issues.push(...headingStructureIssues(chapter));
   issues.push(...figureUsageIssues(text));
   const customAudit = Rules.auditChapter || Rules.runChapterChecks;
   if (typeof customAudit === 'function') {
@@ -2441,18 +2649,28 @@ function totalBodyChars() {
 }
 
 function repeatedParagraphIssues() {
-  const seen = new Map();
+  const seen = [];
   const issues = [];
   Object.values(project.paper.chapters || {}).forEach(chapter => {
-    String(chapter.content || '').split(/\n{2,}/).forEach(paragraph => {
-      const normalized = paragraph.replace(/[#>*`\s\d.,，。；;：:（）()【】\[\]-]/g, '');
-      if (normalized.length < 80) return;
-      const key = normalized.slice(0, 180);
-      if (seen.has(key)) issues.push(`第${seen.get(key)}章和第${chapter.id}章存在疑似重复段落`);
-      else seen.set(key, chapter.id);
+    proseBlocks(chapter.content).filter(isDeduplicableBlock).forEach(paragraph => {
+      const duplicate = seen.find(item => trigramSimilarity(item.paragraph, paragraph) >= 0.9);
+      if (duplicate) issues.push(`第${duplicate.chapterId}章和第${chapter.id}章存在高度重复段落，需删除重复论述并保留所属章节的唯一职责`);
+      else seen.push({ chapterId: chapter.id, paragraph });
     });
   });
   return unique(issues);
+}
+
+function acknowledgmentQualityIssues(input = project.paper.acknowledgment) {
+  const value = String(input || '').trim();
+  const issues = [];
+  if (!value) return ['致谢尚未生成'];
+  if (value.length < 140) issues.push('致谢过短，应结合选题、硬件调试、程序验证和论文整理等实际环节表达感谢');
+  if (/时光荏苒|白驹过隙|岁月如梭|光阴似箭|转眼间.*大学/.test(value)) issues.push('致谢使用了模板化开头，需要改为具体、朴实的项目过程表达');
+  const names = [...value.matchAll(/(?:感谢|感激|致谢)(?:我的|本人的)?(?:导师|指导教师|老师|教授)?[：:，,\s]*([\u4e00-\u9fff]{2,4})(?:老师|教授|同学|先生|女士)/g)]
+    .map(match => match[1]);
+  if (names.length) issues.push(`致谢不得出现人名：${unique(names).join('、')}`);
+  return issues;
 }
 
 function fallbackQuality() {
@@ -2499,8 +2717,21 @@ function fallbackQuality() {
   if (lines(project.materials.connectionText).length >= 3 && !/表\s*3[-－—]\d+|连接关系表/.test(ch3)) confirm.push('连接信号较多，但第三章没有识别到连接关系表，请确认正文是否已经集中说明清楚');
   const allBody = Object.values(project.paper.chapters || {}).map(chapter => chapter.content || '').join('\n');
   if (/待插入/.test(allBody) && !/【非正文·/.test(allBody)) blocking.push('存在图表占位，但缺少与正文区分的详细绘制或拍摄说明');
-  repeatedParagraphIssues().forEach(item => writing.push(item));
-  if (!project.materials.testInfo) confirm.push('测试数据和操作记录尚未由用户确认');
+  repeatedParagraphIssues().forEach(item => blocking.push(item));
+  (project.paper.semanticIssues || []).forEach(item => {
+    const message = `${item.chapterId ? `第${item.chapterId}章：` : ''}${item.detail || item.message || item}`;
+    (item.severity === 'blocking' ? blocking : confirm).push(message);
+  });
+  acknowledgmentQualityIssues().forEach(item => blocking.push(item));
+  const referenceValidator = Rules.validateReferences;
+  if (typeof referenceValidator === 'function') {
+    try {
+      const referenceResult = referenceValidator({ references: refs, chapters: project.paper.chapters, requireAllSelected: true });
+      referenceResult.errors.forEach(item => blocking.push(item.message || String(item)));
+      referenceResult.warnings.forEach(item => confirm.push(item.message || String(item)));
+    } catch (error) { console.warn(error); }
+  }
+  if (!project.materials.testInfo) writing.push('第五章量化数据由系统按器件能力和常见实验条件保守推定，请在定稿前根据实物测试调整');
   if (!project.materials.photoNotes) confirm.push('实物图和功能展示图仍需在 WPS 中补充');
   return { bodyChars, blocking: unique(blocking), confirm: unique(confirm), writing: unique(writing), checkedAt: nowIso() };
 }
@@ -2567,9 +2798,10 @@ function runQualityCore() {
           outline,
           references: referencesForPrompt(),
           artifacts: [],
-          abstractCn: project.paper.abstractCn,
-          abstractEn: project.paper.abstractEn,
-        }) : null;
+           abstractCn: project.paper.abstractCn,
+           abstractEn: project.paper.abstractEn,
+           acknowledgment: project.paper.acknowledgment,
+         }) : null;
       if (custom && typeof custom === 'object') {
         result = {
           ...result,
@@ -2604,6 +2836,73 @@ function qualityChapterTargets(result) {
       .forEach(chapter => ids.add(chapter.id));
   }
   return [...ids];
+}
+
+function semanticAuditPrompt() {
+  const chapters = Object.values(project.paper.chapters || {})
+    .sort((left, right) => Number(left.id) - Number(right.id))
+    .map(chapter => `===== 第${chapter.id}章 ${chapter.title} =====\n${chapter.content}`)
+    .join('\n\n');
+  return `请对以下单片机本科论文进行严格但保守的跨章一致性审查。
+
+【已确认题目】${project.title}
+【已确认器件】${paperDevices().join('、')}
+【已确认功能】${paperFunctions().join('；')}
+【已确认硬件连接】${project.materials.connectionText || '网站未录入，不能据此判定系统未完成'}
+【已有方案或任务说明】${project.materials.sourceNotes || '网站未录入'}
+
+只检查以下问题：
+1. 两章或多章大段重复、同一器件原理或同一功能流程被完整复述；
+2. 器件型号、通信方式、供电电压、引脚、接口或控制关系前后明确矛盾；
+3. 第五章没有量化数据表，或正文、表格、结论中的同一数据互相冲突；
+4. 三级标题拆分过细，同类器件、同类电路、同类程序被机械拆成大量标题；
+5. 第六章把已确认功能说成未完成、未实现、无法运行或仅停留在设想。
+
+不要把合理的前后衔接、必要交叉引用、章节职责不同的简短复述当作重复；硬件矛盾必须能指出冲突双方，不能靠常识猜测。返回严格 JSON：
+{"issues":[{"chapterId":"需要修改的章节编号1-6","severity":"blocking或confirm","type":"repetition|hardware_contradiction|test_data|heading_fragmentation|completion_denial","detail":"具体问题，指出冲突或重复内容","instruction":"如何修改且不改变已确认事实"}]}
+没有问题返回 {"issues":[]}，不要返回 Markdown。
+
+【论文正文】
+${chapters}`;
+}
+
+async function runSemanticPaperAudit(signal) {
+  const raw = await callAi([
+    { role: 'system', content: '你是嵌入式本科论文一致性审稿人。只报告证据明确的问题，返回严格JSON，不新增或猜测项目事实。' },
+    { role: 'user', content: semanticAuditPrompt() },
+  ], { model: 'thinking', maxTokens: 6144, signal });
+  const data = parseJsonResponse(raw);
+  const allowedTypes = new Set(['repetition', 'hardware_contradiction', 'test_data', 'heading_fragmentation', 'completion_denial']);
+  const issues = (Array.isArray(data.issues) ? data.issues : []).map(item => ({
+    chapterId: /^[1-6]$/.test(String(item.chapterId || '')) ? String(item.chapterId) : '',
+    severity: item.severity === 'confirm' ? 'confirm' : 'blocking',
+    type: allowedTypes.has(item.type) ? item.type : 'hardware_contradiction',
+    detail: String(item.detail || '').trim(),
+    instruction: String(item.instruction || '').trim(),
+  })).filter(item => item.chapterId && item.detail);
+  project.paper.semanticIssues = issues;
+  project.paper.semanticCheckedAt = nowIso();
+  saveProject({ immediate: true });
+  return issues;
+}
+
+async function auditAndRepairPaperSemantics(signal) {
+  let issues = await runSemanticPaperAudit(signal);
+  const targets = [...new Set(issues.filter(item => item.severity === 'blocking').map(item => item.chapterId))];
+  for (let index = 0; index < targets.length; index += 1) {
+    if (signal.aborted) throw new DOMException('已取消生成', 'AbortError');
+    const chapter = project.paper.chapters[targets[index]];
+    if (!chapter) continue;
+    const related = issues.filter(item => item.chapterId === chapter.id);
+    updateBusyProgress(79 + Math.round(index / Math.max(1, targets.length) * 3), `正在修订第 ${chapter.id} 章的一致性问题`, related[0]?.detail || '正在消除重复、矛盾或不当标题');
+    const revised = await requestChapterRevision(chapter, related, signal);
+    persistGeneratedChapter(chapter, revised, { append: false });
+    chapter.issues = auditChapterLocal(chapter);
+    chapter.status = chapter.issues.some(issue => issue.severity === 'blocking') ? 'reviewing' : 'locked';
+    saveProject({ immediate: true });
+  }
+  if (targets.length) issues = await runSemanticPaperAudit(signal);
+  return issues;
 }
 
 function renderQuality(panel) {
@@ -2645,7 +2944,7 @@ async function generateAbstracts() {
   try {
     const raw = await callAi([
       { role: 'system', content: '你是本科工程论文摘要编辑。只能概括正文已有事实，不添加新功能、新数据或夸张结论。返回严格 JSON，不要 Markdown。' },
-      { role: 'user', content: `题目：${project.title}\n全文摘要材料：\n${digest}\n\n返回 {"abstractCn":"300至500字中文摘要，包含目的、方法、实现内容、保守成果","keywords":"3至5个中文关键词，用分号分隔","abstractEn":"与中文摘要语义完全一致的英文摘要","acknowledgment":"简洁本科论文致谢"}` },
+      { role: 'user', content: `题目：${project.title}\n全文摘要材料：\n${digest}\n\n返回 {"abstractCn":"300至500字中文摘要，包含目的、方法、实现内容、保守成果","keywords":"3至5个中文关键词，用分号分隔","abstractEn":"与中文摘要语义完全一致的英文摘要","acknowledgment":"180至260字、2至3段的朴实致谢；结合选题分析、硬件调试、程序验证和论文整理，不出现任何人名、学校名或单位名，不使用时光荏苒、白驹过隙、岁月如梭等模板句"}` },
     ], { temperature: 0.25, signal: requestController.signal });
     const data = parseJsonResponse(raw);
     project.paper.abstractCn = String(data.abstractCn || '').trim();
@@ -2675,7 +2974,7 @@ async function generateAbstractsCore(signal) {
   }).join('\n\n');
   const raw = await callAi([
     { role: 'system', content: '你是本科工程论文摘要编辑。只能概括正文已有事实，不添加新功能、新数据或夸张结论。返回严格 JSON，不要 Markdown。' },
-    { role: 'user', content: `题目：${project.title}\n全文摘要材料：\n${digest}\n\n返回 {"abstractCn":"300至500字中文摘要，包含目的、方法、实现内容、保守成果","keywords":"3至5个中文关键词，用分号分隔","abstractEn":"与中文摘要语义完全一致的英文摘要","acknowledgment":"简洁本科论文致谢"}` },
+    { role: 'user', content: `题目：${project.title}\n全文摘要材料：\n${digest}\n\n返回 {"abstractCn":"300至500字中文摘要，包含目的、方法、实现内容、保守成果","keywords":"3至5个中文关键词，用分号分隔","abstractEn":"与中文摘要语义完全一致的英文摘要","acknowledgment":"180至260字、2至3段的朴实致谢；结合选题分析、硬件调试、程序验证和论文整理，不出现任何人名、学校名或单位名，不使用时光荏苒、白驹过隙、岁月如梭等模板句"}` },
   ], { temperature: 0.25, maxTokens: 4096, signal });
   const data = parseJsonResponse(raw);
   const abstractCn = String(data.abstractCn || '').trim();
@@ -2685,7 +2984,16 @@ async function generateAbstractsCore(signal) {
   project.paper.abstractCn = abstractCn;
   project.paper.keywords = keywords;
   project.paper.abstractEn = abstractEn;
-  project.paper.acknowledgment = String(data.acknowledgment || '').trim();
+  let acknowledgment = String(data.acknowledgment || '').trim();
+  if (acknowledgmentQualityIssues(acknowledgment).length) {
+    acknowledgment = stripThink(await callAi([
+      { role: 'system', content: '你是本科工程论文致谢编辑。只返回致谢正文，不返回标题或解释。' },
+      { role: 'user', content: `请重写下面致谢。要求180至260字、2至3段，结合选题分析、硬件搭建与调试、程序验证、测试记录和论文整理表达概括性感谢；不得出现任何人名、学校名、单位名；不得使用“时光荏苒、白驹过隙、岁月如梭、光阴似箭”等模板句。\n\n原文：${acknowledgment}` },
+    ], { temperature: 0.45, maxTokens: 1200, signal })).trim();
+  }
+  const acknowledgmentIssues = acknowledgmentQualityIssues(acknowledgment);
+  if (acknowledgmentIssues.length) throw new Error(acknowledgmentIssues[0]);
+  project.paper.acknowledgment = acknowledgment;
   saveProject({ immediate: true });
   return data;
 }
@@ -2763,6 +3071,16 @@ async function generateFullPaper() {
       updateBusyProgress(generation.percent, `第 ${chapter.id} 章已保存`, `已完成 ${generation.completedChapterIds.length} / 6 章，正在准备下一章`);
     }
     if (signal.aborted) throw new DOMException('已取消生成', 'AbortError');
+    generation.phase = 'semantic';
+    generation.currentChapterId = '';
+    generation.message = '正在检查跨章节重复与硬件一致性';
+    generation.percent = 78;
+    saveProject({ immediate: true });
+    renderPaper();
+    showBusy('正在复核整篇论文', '检查重复章节、硬件矛盾、测试数据、标题结构和总结表述');
+    updateBusyProgress(78, '正在执行全文语义复核', '发现明确问题时会定向重写对应章节，而不是继续追加旧内容');
+    await auditAndRepairPaperSemantics(signal);
+
     generation.phase = 'abstract';
     generation.currentChapterId = '';
     generation.message = '正在根据全文生成中英文摘要';
@@ -2794,12 +3112,19 @@ async function generateFullPaper() {
           const message = typeof item === 'string' ? item : item.message || '';
           return message.includes(`第${chapter.id}章`) || (chapter.id === '1' && /参考文献|引用/.test(message));
         });
+        if (related.length && related.every(item => /出版信息|期刊名|卷号|期号|页码|学位授予单位|出版社|文献类型/.test(typeof item === 'string' ? item : item.message || ''))) continue;
         chapter.issues = related.map(message => ({ severity: 'blocking', message: typeof message === 'string' ? message : message.message }));
         generation.currentChapterId = chapter.id;
         const repairPercent = 93 + Math.round(index / Math.max(1, repairTargets.length) * 4);
-        updateBusyProgress(repairPercent, `正在完善第 ${chapter.id} 章`, '只针对检查发现的问题补充当前章节，不会整篇重写');
-        const supplemented = await requestChapterContent(chapter, { mode: 'continue', signal });
-        persistGeneratedChapter(chapter, supplemented.content, { append: true });
+        const replace = issuesRequireReplacement(related);
+        updateBusyProgress(repairPercent, `正在完善第 ${chapter.id} 章`, replace ? '正在替换修订当前章节，删除旧稿中的重复或错误内容' : '只补充当前章节确实缺少的内容');
+        if (replace) {
+          const revised = await requestChapterRevision(chapter, related, signal);
+          persistGeneratedChapter(chapter, revised, { append: false });
+        } else {
+          const supplemented = await requestChapterContent(chapter, { mode: 'continue', signal });
+          persistGeneratedChapter(chapter, supplemented.content, { append: true });
+        }
         chapter.issues = auditChapterLocal(chapter);
         chapter.status = chapter.issues.some(issue => issue.severity === 'blocking') ? 'reviewing' : 'locked';
         saveProject({ immediate: true });
@@ -2872,9 +3197,9 @@ async function generateFullPaper() {
   }
 }
 
-async function callAi(messages, { temperature = 0.4, maxTokens = 8192, model = 'deepseek-chat', signal } = {}) {
+async function callAi(messages, { temperature = 0.4, maxTokens = 8192, model = 'normal', signal } = {}) {
   if (!DEEPSEEK_API_KEY) throw new Error('网页版本尚未配置 DeepSeek API Key');
-  const reasoning = model === 'deepseek-reasoner';
+  const reasoning = model === 'thinking' || model === 'deepseek-reasoner';
   const payload = {
     model: reasoning ? DEEPSEEK_REASONING_MODEL : DEEPSEEK_CHAT_MODEL,
     messages,
@@ -3161,10 +3486,7 @@ async function copyScheme() {
 function bibliographyHtml() {
   const refs = referencesForPrompt();
   if (!refs.length) return '';
-  return `<h2>参考文献</h2><div>${refs.map((ref, index) => {
-    const authors = Array.isArray(ref.authors) ? ref.authors.join('，') : ref.authors;
-    return `<p>[${index + 1}] ${escapeHtml([authors, ref.title].filter(Boolean).join('：'))}</p>`;
-  }).join('')}</div>`;
+  return `<h2>参考文献</h2><div>${refs.map((ref, index) => `<p>[${index + 1}] ${escapeHtml(formattedReference(ref))}</p>`).join('')}</div>`;
 }
 
 async function exportPaper(finalVersion) {
@@ -3173,6 +3495,7 @@ async function exportPaper(finalVersion) {
     toast('论文资料不完整，请先填写题目、器件和功能', 'error');
     return false;
   }
+  if (finalVersion) runQualityCore();
   if (finalVersion && (!project.paper.quality || project.paper.quality.blocking.length)) {
     toast('还有必须解决的问题，只能导出论文草稿', 'error');
     return false;
@@ -3444,3 +3767,4 @@ function init() {
 }
 
 init();
+
