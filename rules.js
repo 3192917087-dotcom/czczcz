@@ -795,7 +795,19 @@ function namedResearchClaims(sentence) {
   for (const match of sentence.matchAll(/\b([A-Z][A-Za-z'-]{1,30})(?:\s+et\s+al\.?)?\s+(?:proposed|studied|designed|developed)\b/g)) {
     claims.push(match[1]);
   }
+  for (const match of sentence.matchAll(/([\u4e00-\u9fff]{2,4}|\b[A-Z][A-Za-z'-]{1,30})(?:等|\s+et\s+al\.?)?\s*[（(](?:19|20)\d{2}[a-z]?[）)]\s*(?:提出|指出|认为|研究了?|设计了?|proposed|studied|designed)/g)) {
+    const candidate = match[1];
+    if (/^[A-Z]/.test(candidate) || (!ignoredNamedSubject(candidate) && commonSurname.test(candidate))) claims.push(candidate);
+  }
+  for (const match of sentence.matchAll(/根据\s*([\u4e00-\u9fff]{2,4}|[A-Z][A-Za-z'-]{1,30})(?:等|\s+et\s+al\.?)?的研究/g)) {
+    const candidate = match[1];
+    if (/^[A-Z]/.test(candidate) || (!ignoredNamedSubject(candidate) && commonSurname.test(candidate))) claims.push(candidate);
+  }
   return uniqueBy(claims);
+}
+
+function explicitReferenceTitles(sentence) {
+  return uniqueBy([...sentence.matchAll(/《([^》]{2,80})》(?:一文|研究)?(?:提出|指出|认为|显示|表明)/g)].map(match => text(match[1])));
 }
 
 export function validateReferences({ references = [], chapters = {}, bibliography = null, requireAllSelected = true } = {}) {
@@ -827,11 +839,13 @@ export function validateReferences({ references = [], chapters = {}, bibliograph
     for (const sentence of citationSentences(content)) {
       const marks = [...sentence.matchAll(/\[(\d+)\]/g)].map(match => Number(match[1]));
       const namedClaims = namedResearchClaims(sentence);
+      const explicitTitles = explicitReferenceTitles(sentence);
       if (marks.length > 1) errors.push({ code: 'multiple_citations_in_sentence', chapter: chapterNumber, message: `单句出现多个引用：${sentence}` });
-      if (namedClaims.length && marks.length === 0) {
-        if (!refs.length) errors.push({ code: 'citation_named_claim_without_library', chapter: chapterNumber, message: `未提供参考文献却出现了具名研究陈述：“${namedClaims.join('、')}”` });
+      if ((namedClaims.length || explicitTitles.length) && marks.length === 0) {
+        const claimLabel = [...namedClaims, ...explicitTitles.map(title => `《${title}》`)].join('、');
+        if (!refs.length) errors.push({ code: 'citation_named_claim_without_library', chapter: chapterNumber, message: `未提供参考文献却出现了具名研究陈述：“${claimLabel}”` });
         else if (chapterNumber !== '1') errors.push({ code: 'citation_named_claim_outside_ch1', chapter: chapterNumber, message: `具名文献研究陈述只能出现在第一章：“${namedClaims.join('、')}”` });
-        else errors.push({ code: 'citation_named_claim_unmarked', chapter: chapterNumber, message: `具名研究陈述“${namedClaims.join('、')}”缺少对应的用户文献引用` });
+        else errors.push({ code: 'citation_named_claim_unmarked', chapter: chapterNumber, message: `具名研究陈述“${claimLabel}”缺少对应的用户文献引用` });
       }
       if (marks.length === 1) {
         const current = refs[marks[0] - 1];
@@ -843,11 +857,18 @@ export function validateReferences({ references = [], chapters = {}, bibliograph
         if (namedReferences.some(item => item.index !== marks[0])) {
           errors.push({ code: 'citation_author_mismatch', chapter: chapterNumber, message: `句中作者与引用[${marks[0]}]不对应：${sentence}` });
         }
-        const unrecognized = namedAuthorCandidates(sentence).filter(candidate =>
+        const unrecognized = uniqueBy([...namedAuthorCandidates(sentence), ...namedClaims]).filter(candidate =>
           !currentTokens.some(token => candidate.includes(token) || token.includes(candidate)),
         );
         if (unrecognized.length) {
           errors.push({ code: 'citation_author_unknown', chapter: chapterNumber, message: `句中作者“${unrecognized.join('、')}”与引用[${marks[0]}]的作者不对应` });
+        }
+        if (explicitTitles.some(title => {
+          const claimKey = normalizeKey(title);
+          const currentKey = normalizeKey(current.title);
+          return claimKey && currentKey && !claimKey.includes(currentKey) && !currentKey.includes(claimKey);
+        })) {
+          errors.push({ code: 'citation_title_mismatch', chapter: chapterNumber, message: `句中文献题名与引用[${marks[0]}]不对应` });
         }
       }
     }
