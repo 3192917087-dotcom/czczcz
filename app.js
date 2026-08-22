@@ -1,4 +1,4 @@
-import * as Rules from './rules.js?v=20260822-1';
+import * as Rules from './rules.js?v=20260822-2';
 
 const PAGE_CONFIG = globalThis.MCU_PAGE_CONFIG || {};
 const DEEPSEEK_API_URL = String(PAGE_CONFIG.apiUrl || 'https://api.deepseek.com/chat/completions');
@@ -189,6 +189,13 @@ function normalizeProject(value) {
   Object.values(normalized.paper.chapters).forEach(chapter => {
     if (chapter?.status === 'generating') chapter.status = chapter.content ? 'draft' : 'planned';
   });
+  if (Object.values(normalized.paper.chapters).some(chapter => chapter?.content)
+    && !normalized.paper.semanticCheckedAt
+    && normalized.paper.generation.status === 'completed') {
+    normalized.paper.generation.status = 'paused';
+    normalized.paper.generation.message = '需要按新版规则复核重复、硬件一致性和参考文献';
+    normalized.paper.quality = null;
+  }
   normalized.scheme.markdown = normalizeKnownText(normalized.scheme.markdown || '');
   if (normalized.scheme.markdown && ['mapping-review-required', 'reviewed'].includes(normalized.scheme.status)) {
     normalized.scheme.status = 'generated';
