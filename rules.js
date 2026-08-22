@@ -141,11 +141,12 @@ export const PAPER_BASE_SYSTEM_PROMPT = String.raw`
 
 【引用】
 1. 只使用用户文献库，不联网检索、不新增文献。
-2. 引用只出现在第一章，主要位于国内外研究现状。
-3. 每篇文献全文只引用一次；每个观点句只放一个 [n]；禁止合并引用。
-4. 生成阶段若文献记录提供 citationToken，必须在对应观点句使用该令牌，不自行猜数字；系统将按正文实际出现顺序转换为从 [1] 连续的编号，并同步排序文末参考文献。
-5. 正文作者必须与编号对应文献一致。无摘要文献只能保守描述题目体现的研究方向。
-6. 文献库必须保留完整出版信息：期刊文献应含期刊名、年份、卷（期）和页码；学位论文应含学位授予单位和年份；其他类型应按对应 GB/T 7714 项目保留来源与年份。不得只输出作者和题名。
+2. 用户未提供文献时按“无参考文献模式”正常写作：不得编造作者、题名或出版信息，不得输出 citationToken、[n] 引用编号和文末参考文献；国内外现状采用不点名的概括性分析，不能因文献为空而中止论文生成。
+3. 用户提供文献时，粘贴内容是唯一文献来源，必须原样忠实使用；不得新增、删除、替换、联网检索或猜补缺失出版信息。
+4. 引用只出现在第一章，主要位于国内外研究现状。用户提供的每篇文献全文只引用一次；每个观点句只放一个 [n]；禁止合并引用。
+5. 生成阶段若文献记录提供 citationToken，必须在对应观点句使用该令牌，不自行猜数字；系统将按正文实际出现顺序转换为从 [1] 连续的编号，并同步排序文末参考文献。
+6. 正文作者必须与编号对应文献一致。无摘要文献只能保守描述题目体现的研究方向。
+7. 用户提供的文献必须保留完整出版信息：期刊文献应含期刊名、年份、卷（期）和页码；学位论文应含学位授予单位和年份；其他类型应按对应 GB/T 7714 项目保留来源与年份。不得只输出作者和题名。
 
 【写作质量】
 - 使用“本文”“本系统”“该模块”，语言正式、清楚、符合本科工程设计水平。
@@ -760,11 +761,23 @@ function authorTokens(reference) {
   }));
 }
 
+const IGNORED_NAMED_SUBJECTS = new Set([
+  '国内', '国外', '相关', '已有', '部分', '学者', '研究', '现有', '本文', '本研究', '近年来',
+  '相关学者', '国内学者', '国外学者', '本系统', '该系统', '系统设计', '控制系统', '相关研究',
+  '现有研究', '部分研究', '研究人员', '传感器', '执行器', '核心器件', '各模块', '该模块', '本模块',
+]);
+
+function ignoredNamedSubject(value) {
+  const subject = text(value);
+  return IGNORED_NAMED_SUBJECTS.has(subject)
+    || /^(?:本|该|其|上述|相关|现有|部分)(?:系统|项目|模块|设计|研究|方法|方案|器件)$/.test(subject)
+    || /^[\u4e00-\u9fff]{1,4}(?:系统|模块|装置|平台|网络|电路|方案|方法|模型|算法|技术|器件)$/.test(subject);
+}
+
 function namedAuthorCandidates(sentence) {
-  const ignored = new Set(['国内', '国外', '相关', '已有', '部分', '学者', '研究', '现有', '本文', '本研究', '相关学者', '国内学者', '国外学者']);
   const candidates = [];
   for (const match of sentence.matchAll(/([\u4e00-\u9fff]{2,4})(?:等)?(?:围绕|针对|提出|设计了?|研究了|构建了?|采用了?|开发了?|实现了?)/g)) {
-    if (!ignored.has(match[1])) candidates.push(match[1]);
+    if (!ignoredNamedSubject(match[1])) candidates.push(match[1]);
   }
   for (const match of sentence.matchAll(/\b([A-Z][A-Za-z'-]{1,30})(?:\s+et\s+al\.?)?(?:等)?(?:\s+|，|,)(?:studied|proposed|designed|developed|研究|提出|设计|开发)/g)) {
     candidates.push(match[1]);
@@ -772,8 +785,22 @@ function namedAuthorCandidates(sentence) {
   return uniqueBy(candidates);
 }
 
+function namedResearchClaims(sentence) {
+  const claims = [];
+  const commonSurname = /^[赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣贲邓郁单杭洪包诸左石崔吉龚程嵇邢滑裴陆荣翁荀羊甄魏家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶黎乔苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍桑桂濮牛寿通边扈燕冀浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公]/;
+  for (const match of sentence.matchAll(/(?:^|[，,]\s*)([\u4e00-\u9fff]{2,4})(等(?:人|学者)?)?(?:提出|指出|认为|研究了?|设计了?|开发了?|构建了?)/g)) {
+    const candidate = match[1];
+    if (!ignoredNamedSubject(candidate) && (match[2] || commonSurname.test(candidate))) claims.push(candidate);
+  }
+  for (const match of sentence.matchAll(/\b([A-Z][A-Za-z'-]{1,30})(?:\s+et\s+al\.?)?\s+(?:proposed|studied|designed|developed)\b/g)) {
+    claims.push(match[1]);
+  }
+  return uniqueBy(claims);
+}
+
 export function validateReferences({ references = [], chapters = {}, bibliography = null, requireAllSelected = true } = {}) {
   const refs = parseReferences(references).filter(reference => reference.selected !== false);
+  const referenceIds = new Set(refs.map(reference => reference.id));
   const errors = [];
   const warnings = [];
   const occurrences = [];
@@ -781,6 +808,15 @@ export function validateReferences({ references = [], chapters = {}, bibliograph
   const adjacentPattern = /\[\d+\]\s*\[\d+\]/;
 
   for (const [chapterNumber, content] of chapterEntries(chapters)) {
+    for (const match of content.matchAll(/\{\{cite:([^}]+)\}\}/g)) {
+      const referenceId = text(match[1]);
+      if (!refs.length) errors.push({ code: 'citation_token_without_library', chapter: chapterNumber, message: '未提供参考文献却出现了引用令牌' });
+      else if (!referenceIds.has(referenceId)) errors.push({ code: 'citation_token_unknown', chapter: chapterNumber, message: `引用令牌“${referenceId}”不在用户文献库中` });
+      else errors.push({ code: 'citation_token_unresolved', chapter: chapterNumber, message: `引用令牌“${referenceId}”尚未转换为正文编号` });
+    }
+    if (!refs.length && (/^#{1,6}\s*参考文献\s*$/mi.test(content) || /\[(?:J|D|M|C|EB\/OL)\]/i.test(content))) {
+      errors.push({ code: 'bibliography_without_library', chapter: chapterNumber, message: '未提供参考文献却生成了文献条目或参考文献小节' });
+    }
     if (groupedPattern.test(content) || adjacentPattern.test(content)) {
       errors.push({ code: 'citation_grouped', chapter: chapterNumber, message: '一个引用位置只能出现一个编号，禁止合并引用' });
     }
@@ -790,7 +826,13 @@ export function validateReferences({ references = [], chapters = {}, bibliograph
     }
     for (const sentence of citationSentences(content)) {
       const marks = [...sentence.matchAll(/\[(\d+)\]/g)].map(match => Number(match[1]));
+      const namedClaims = namedResearchClaims(sentence);
       if (marks.length > 1) errors.push({ code: 'multiple_citations_in_sentence', chapter: chapterNumber, message: `单句出现多个引用：${sentence}` });
+      if (namedClaims.length && marks.length === 0) {
+        if (!refs.length) errors.push({ code: 'citation_named_claim_without_library', chapter: chapterNumber, message: `未提供参考文献却出现了具名研究陈述：“${namedClaims.join('、')}”` });
+        else if (chapterNumber !== '1') errors.push({ code: 'citation_named_claim_outside_ch1', chapter: chapterNumber, message: `具名文献研究陈述只能出现在第一章：“${namedClaims.join('、')}”` });
+        else errors.push({ code: 'citation_named_claim_unmarked', chapter: chapterNumber, message: `具名研究陈述“${namedClaims.join('、')}”缺少对应的用户文献引用` });
+      }
       if (marks.length === 1) {
         const current = refs[marks[0] - 1];
         if (!current) continue;
